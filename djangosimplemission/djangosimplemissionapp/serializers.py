@@ -1,0 +1,1018 @@
+from django.db import models
+from rest_framework import serializers
+from django.utils import timezone
+from decimal import Decimal
+from .models import (
+    User,Role,ProjectClient,ProjectBusinessAddress,DomainOrServerThirdPartyServiceProvider,
+    ProjectDomain,ProjectServer,ProjectFinance,Team,ProjectTeam,ProjectNature,
+    Project,ProjectBaseInformation,ProjectExcution,ProjectTeamMember,ProjectService,
+    ProjectServiceTeam,ProjectServiceMember,ProjectDocument,
+    EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
+    Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,UserSalary,
+    ClientAdvance
+)
+class RoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Role
+        fields = ['id', 'name']
+
+class UserSerializer(serializers.ModelSerializer):
+
+    roles = RoleSerializer(many=True, read_only=True)
+    role_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(),
+        many=True,
+        write_only=True,
+        source='roles'
+    )
+
+    class Meta:
+        model = User
+        fields = [
+            'id',
+            'username',
+            'email',
+            'first_name',
+            'last_name',
+            'phone_number',
+            'designation',
+            'roles',
+            'role_ids',
+        ]
+        extra_kwargs = {
+            'password': {'write_only': True}
+        }
+
+    def create(self, validated_data):
+        roles = validated_data.pop('roles', [])
+        password = validated_data.pop('password', None)
+
+        user = User(**validated_data)
+
+        if password:
+            user.set_password(password)
+
+        user.save()
+        user.roles.set(roles)
+
+
+        return user
+
+    def update(self, instance, validated_data):
+        roles = validated_data.pop('roles', None)
+        password = validated_data.pop('password', None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        if password:
+            instance.set_password(password)
+
+        instance.save()
+
+        if roles is not None:
+            instance.roles.set(roles)
+
+
+        return instance
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True)
+
+class AdminChangePasswordSerializer(serializers.Serializer):
+    new_password = serializers.CharField(required=True)
+
+
+class ProjectClientSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectClient
+        fields = '__all__'  
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+
+class ProjectBusinessAddressSerializer(serializers.ModelSerializer):
+    # This will show a list of project names/IDs linked to this address
+    projects = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProjectBusinessAddress
+        fields = '__all__'  
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+    def get_projects(self, obj):
+        return [{"id": p.id, "name": p.name} for p in obj.projects.all()]
+
+class ClientAdvanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ClientAdvance
+        fields = '__all__'
+        extra_kwargs = {
+            'id': {'read_only': False, 'required': False, 'allow_null': True},
+            'remaining_amount': {'read_only': False, 'required': False},
+            'advance_balance': {'read_only': False, 'required': False},
+        }
+
+class ClientSummarySerializer(serializers.ModelSerializer):
+    total_invoiced = serializers.SerializerMethodField()
+    total_paid = serializers.SerializerMethodField()
+    total_balance_due = serializers.SerializerMethodField()
+    invoice_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProjectBusinessAddress
+        fields = ['id', 'legal_name', 'total_invoiced', 'total_paid', 'total_balance_due', 'invoice_count']
+
+    def get_total_invoiced(self, obj):
+        return obj.invoices.aggregate(total=models.Sum('total_amount'))['total'] or 0
+
+    def get_total_paid(self, obj):
+        return obj.invoices.aggregate(total=models.Sum('total_paid'))['total'] or 0
+
+    def get_total_balance_due(self, obj):
+        return obj.invoices.aggregate(total=models.Sum('balance_due'))['total'] or 0
+
+    def get_invoice_count(self, obj):
+        return obj.invoices.count()
+
+    def update(self, instance, validated_data):
+        # If user manually edits remaining_amount, calculate initial_usage
+        new_remaining = validated_data.get('remaining_amount')
+        if new_remaining is not None and new_remaining != instance.remaining_amount:
+            # Adjustment = Original Amount - What is left now
+            # Actually, initial_usage is "Already spent before system application"
+            # It's better to calculate it based on current applications too.
+            # For simplicity: usage = amount - new_remaining
+            instance.initial_usage = instance.amount - Decimal(str(new_remaining))
+        
+        # Also handle advance_balance similarly for consistency
+        new_balance = validated_data.get('advance_balance')
+        if new_balance is not None:
+             instance.advance_balance = new_balance
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        instance.save()
+        return instance
+
+class DomainOrServerThirdPartyServiceProviderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DomainOrServerThirdPartyServiceProvider
+        fields = '__all__'  
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+class ProjectDomainSerializer(serializers.ModelSerializer):
+    provider = DomainOrServerThirdPartyServiceProviderSerializer(many=True, required=False)
+
+    class Meta:
+        model = ProjectDomain
+        fields = '__all__'
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+    def create(self, validated_data):
+        provider_data = validated_data.pop('provider', [])
+        domain = ProjectDomain.objects.create(**validated_data)
+        for p_data in provider_data:
+            p_data.pop('id', None)  # Remove id if null/present to avoid conflicts
+            provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
+            domain.provider.add(provider)
+        return domain
+
+    def update(self, instance, validated_data):
+        provider_data = validated_data.pop('provider', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if provider_data is not None:
+            instance.provider.all().delete()
+            for p_data in provider_data:
+                p_data.pop('id', None)
+                provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
+                instance.provider.add(provider)
+        return instance
+
+
+class ProjectServerSerializer(serializers.ModelSerializer):
+    provider = DomainOrServerThirdPartyServiceProviderSerializer(many=True, required=False)
+
+    class Meta:
+        model = ProjectServer
+        fields = '__all__'
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+    def create(self, validated_data):
+        provider_data = validated_data.pop('provider', [])
+        server = ProjectServer.objects.create(**validated_data)
+        for p_data in provider_data:
+            p_data.pop('id', None)
+            provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
+            server.provider.add(provider)
+        return server
+
+    def update(self, instance, validated_data):
+        provider_data = validated_data.pop('provider', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if provider_data is not None:
+            instance.provider.all().delete()
+            for p_data in provider_data:
+                p_data.pop('id', None)
+                provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
+                instance.provider.add(provider)
+        return instance
+
+
+class ProjectFinanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectFinance
+        fields = '__all__'  
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+class TeamSerializer(serializers.ModelSerializer):
+    team_lead_name = serializers.ReadOnlyField(source='team_lead.username')
+    member_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Team
+        fields = '__all__'  
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+    def get_member_names(self, obj):
+        return [member.username for member in obj.members.all()]
+
+
+
+class ProjectNatureSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectNature
+        fields = '__all__'  
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+
+class ProjectBaseInformationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectBaseInformation
+        fields = '__all__'
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+class ProjectExcutionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectExcution
+        fields = '__all__'
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+class ProjectTeamMemberSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectTeamMember
+        fields = '__all__'
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+class ProjectDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectDocument
+        fields = '__all__'
+        extra_kwargs = {
+            'id': {'read_only': False, 'required': False, 'allow_null': True},
+            'document': {'required': False, 'allow_null': True}
+        }
+
+
+
+
+class EmployeeDailyActivitySerializer(serializers.ModelSerializer):
+    employee_name = serializers.ReadOnlyField(source='employee.username')
+    team_name = serializers.ReadOnlyField(source='team.name')
+    project_name = serializers.ReadOnlyField(source='project.name')
+    project_service_name = serializers.ReadOnlyField(source='project_service.name')
+
+    class Meta:
+        model = EmployeeDailyActivity
+        fields = '__all__'
+        read_only_fields = ['target_work_percentage']
+
+    def _calculate_target(self, validated_data):
+        employee = validated_data.get('employee')
+        project_service = validated_data.get('project_service')
+        project = validated_data.get('project')
+        activity_date = validated_data.get('date')
+
+        if not activity_date or not employee:
+            return 0
+
+        start_date = None
+        allocated_days = 0
+
+        if project_service:
+            from .models import ProjectServiceMember
+            assignment = ProjectServiceMember.objects.filter(service=project_service, employee=employee).first()
+            if assignment and assignment.start_date and getattr(assignment, 'allocated_days', 0) > 0:
+                start_date = assignment.start_date
+                allocated_days = assignment.allocated_days
+        elif project:
+            from .models import ProjectTeamMember
+            assignment = ProjectTeamMember.objects.filter(project=project, employee=employee).first()
+            if assignment and assignment.start_date and getattr(assignment, 'allocated_days', 0) > 0:
+                start_date = assignment.start_date
+                allocated_days = assignment.allocated_days
+
+        if start_date and allocated_days > 0:
+            elapsed_days = (activity_date - start_date).days + 1
+            if elapsed_days <= 0:
+                return 0
+            
+            target = (elapsed_days / allocated_days) * 100
+            
+            return min(int(target), 100)
+        
+        return 0
+
+    def create(self, validated_data):
+        target = self._calculate_target(validated_data)
+        validated_data['target_work_percentage'] = target
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        merged_data = {
+            'employee': validated_data.get('employee', instance.employee),
+            'project': validated_data.get('project', instance.project),
+            'project_service': validated_data.get('project_service', instance.project_service),
+            'date': validated_data.get('date', instance.date)
+        }
+        target = self._calculate_target(merged_data)
+        validated_data['target_work_percentage'] = target
+        return super().update(instance, validated_data)
+
+class ActivityLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ActivityLog
+        fields = '__all__'
+class InvoiceItemSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+    class Meta:
+        model = InvoiceItem
+        fields = '__all__'
+
+class PaymentSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+    class Meta:
+        model = Payment
+        fields = '__all__'
+
+def update_invoice_totals(invoice):
+    """Refined wrapper to call the model-level logic."""
+    invoice.update_totals()
+class InvoiceSerializer(serializers.ModelSerializer):
+
+    items = InvoiceItemSerializer(many=True)
+    payments = PaymentSerializer(many=True, required=False)
+    client_company = ProjectBusinessAddressSerializer(required=True, allow_null=False)
+    company_profile = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Invoice
+        fields = [
+            "id", "invoice_number", "invoice_date", "tax_rate", "discount_amount",
+            "subtotal", "tax_amount", "total_amount", "total_paid", "balance_due",
+            "status", "due_date", "client_company",
+            "company_profile", "items", "payments"
+        ]
+
+    def get_company_profile(self, obj):
+        profile = CompanyProfile.objects.first()
+        if profile:
+            return CompanyProfileSerializer(profile).data
+        return None
+
+    def create(self, validated_data):
+        items_data = validated_data.pop('items')
+        payments_data = validated_data.pop('payments', [])
+        client_company_data = validated_data.pop('client_company', None)
+
+        # Handle client_company creation or lookup
+        client_company = None
+        if client_company_data:
+            # If an ID is provided in the nested data, use it, otherwise create new
+            client_id = client_company_data.pop('id', None)
+            if client_id:
+                client_company = ProjectBusinessAddress.objects.filter(id=client_id).first()
+                if client_company:
+                    for attr, value in client_company_data.items():
+                        setattr(client_company, attr, value)
+                    client_company.save()
+            
+            if not client_company:
+                client_company = ProjectBusinessAddress.objects.create(**client_company_data)
+
+        invoice = Invoice.objects.create(client_company=client_company, **validated_data)
+
+        for item in items_data:
+            item.pop('id', None)
+            item.pop('invoice', None)
+            InvoiceItem.objects.create(invoice=invoice, **item)
+
+        for payment in payments_data:
+            payment.pop('id', None)
+            payment.pop('invoice', None)
+            Payment.objects.create(invoice=invoice, **payment)
+
+        update_invoice_totals(invoice)
+        return invoice
+
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop('items', None)
+        payments_data = validated_data.pop('payments', None)
+        client_company_data = validated_data.pop('client_company', None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        if client_company_data:
+            client_instance = instance.client_company
+            if client_instance:
+                # Update existing client
+                client_company_data.pop('id', None) # Don't update ID
+                for attr, value in client_company_data.items():
+                    setattr(client_instance, attr, value)
+                client_instance.save()
+            else:
+                # Create new client and link it
+                client_instance = ProjectBusinessAddress.objects.create(**client_company_data)
+                instance.client_company = client_instance
+        
+        instance.save()
+
+        if items_data is not None:
+            # SYNC ITEMS: Update existing, Create new, Delete omitted
+            incoming_item_ids = [item_data.get('id') for item_data in items_data if item_data.get('id')]
+            instance.items.exclude(id__in=incoming_item_ids).delete()
+            
+            existing_items = {i.id: i for i in instance.items.all()}
+            for item_data in items_data:
+                i_id = item_data.get('id')
+                item_data.pop('invoice', None)
+                if i_id and i_id in existing_items:
+                    # Update
+                    item_obj = existing_items[i_id]
+                    for attr, value in item_data.items():
+                        setattr(item_obj, attr, value)
+                    item_obj.save()
+                else:
+                    # Create
+                    InvoiceItem.objects.create(invoice=instance, **item_data)
+
+        # --- Payments are now handled via dedicated nested endpoints ---
+        # No more complex "Absolute Synchronization" inside the Invoice serializer.
+        # This prevents accidental deletion of payment history.
+        if payments_data is not None:
+            # Optional: Allow read-only or simple display if needed, 
+            # but don't perform CRUD here anymore.
+            pass
+
+        update_invoice_totals(instance)
+        return instance
+
+
+
+class ActivityExceedCommentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ActivityExceedComment
+        fields = '__all__'
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = '__all__'
+
+class EmployeeLeaveSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EmployeeLeave
+        fields = '__all__'
+
+class CompanySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Company
+        fields = '__all__'
+
+class CompanyProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CompanyProfile
+        fields = '__all__'
+
+class SalarySerializer(serializers.ModelSerializer):
+    employee_name = serializers.ReadOnlyField(source='employee.username')
+    absent_days = serializers.SerializerMethodField()
+
+    def get_absent_days(self, obj):
+        return float(obj.working_days) - float(obj.present_days)
+    
+    class Meta:
+        model = Salary
+        fields = [
+            'id', 'employee', 'employee_name', 'start_date', 'end_date', 
+            'basic', 'working_days', 'present_days', 'absent_days', 'overtime_pay', 
+            'late_deduction', 'bonus', 'advance', 'deductions', 
+            'total_salary', 'status', 'created_at'
+        ]
+        read_only_fields = ['working_days', 'present_days', 'total_salary', 'overtime_pay', 'late_deduction']
+
+class AttendanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Attendance
+        fields = '__all__'
+
+class UserSalarySerializer(serializers.ModelSerializer):
+    username = serializers.ReadOnlyField(source='user.username')
+
+    class Meta:
+        model = UserSalary
+        fields = ['id', 'user', 'username', 'base_salary', 'working_days', 'joining_date', 'created_at', 'updated_at']
+
+class EmployeeSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Employee
+        fields = '__all__'
+
+class OtherIncomeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OtherIncome
+        fields = '__all__'
+
+class OtherExpenseSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OtherExpense
+        fields = '__all__'
+
+
+class ProjectTeamSerializer(serializers.ModelSerializer):
+    members = ProjectTeamMemberSerializer(many=True, required=False)
+    team_detail = TeamSerializer(source='team', read_only=True)
+    team = serializers.PrimaryKeyRelatedField(
+        queryset=Team.objects.all(), required=False, allow_null=True
+    )
+
+    class Meta:
+        model = ProjectTeam
+        fields = ['id', 'project', 'team', 'team_detail', 'members',
+                  'start_date', 'end_date', 'deadline', 'actual_end_date', 'status', 'payment_status', 'cost', 'description', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'id': {'read_only': False, 'required': False, 'allow_null': True},
+            'project': {'required': False, 'allow_null': True},
+        }
+
+    def create(self, validated_data):
+        members_data = validated_data.pop('members', [])
+        validated_data.pop('id', None)
+        project_team = ProjectTeam.objects.create(**validated_data)
+        for member_data in members_data:
+            member_data.pop('id', None)
+            member = ProjectTeamMember.objects.create(**member_data)
+            project_team.members.add(member)
+        return project_team
+
+    def update(self, instance, validated_data):
+        members_data = validated_data.pop('members', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if members_data is not None:
+            instance.members.all().delete()
+            for member_data in members_data:
+                member_data.pop('id', None)
+                member = ProjectTeamMember.objects.create(**member_data)
+                instance.members.add(member)
+        return instance
+
+
+class ProjectServiceTeamSerializer(serializers.ModelSerializer):
+    team_detail = TeamSerializer(source='team', read_only=True)
+    team = serializers.PrimaryKeyRelatedField(
+        queryset=Team.objects.all(), required=False, allow_null=True
+    )
+
+    class Meta:
+        model = ProjectServiceTeam
+        fields = ['id', 'service', 'team', 'team_detail', 'start_date', 'end_date', 'deadline', 'actual_end_date', 'status']
+        extra_kwargs = {
+            'id': {'read_only': False, 'required': False, 'allow_null': True},
+            'service': {'required': False, 'allow_null': True},
+        }
+
+
+class ProjectServiceMemberSerializer(serializers.ModelSerializer):
+    employee_detail = UserSerializer(source='employee', read_only=True)
+    employee = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(), required=False, allow_null=True
+    )
+
+    class Meta:
+        model = ProjectServiceMember
+        fields = ['id', 'service', 'employee', 'employee_detail', 'role',
+                  'allocated_days', 'actual_days', 'cost', 'start_date', 'end_date', 'status', 'notes']
+        extra_kwargs = {
+            'id': {'read_only': False, 'required': False, 'allow_null': True},
+            'service': {'required': False, 'allow_null': True},
+        }
+
+
+class ProjectServiceSerializer(serializers.ModelSerializer):
+    teams   = ProjectServiceTeamSerializer(many=True, required=False)
+    members = ProjectServiceMemberSerializer(many=True, required=False)
+
+    class Meta:
+        model = ProjectService
+        fields = ['id', 'project', 'client_address', 'name', 'description', 
+                  'deadline', 'actual_end_date', 'status', 'payment_status', 'cost', 'created_at', 'teams', 'members']
+        extra_kwargs = {
+            'id': {'read_only': False, 'required': False, 'allow_null': True},
+            'project': {'required': False, 'allow_null': True},
+        }
+
+    def create(self, validated_data):
+        teams_data   = validated_data.pop('teams', [])
+        members_data = validated_data.pop('members', [])
+        validated_data.pop('id', None)
+        validated_data.pop('project', None)
+        service = ProjectService.objects.create(**validated_data)
+        for t_data in teams_data:
+            t_data.pop('id', None)
+            t_data.pop('service', None)
+            ProjectServiceTeam.objects.create(service=service, **t_data)
+        for m_data in members_data:
+            m_data.pop('id', None)
+            m_data.pop('service', None)
+            ProjectServiceMember.objects.create(service=service, **m_data)
+        return service
+
+    def update(self, instance, validated_data):
+        teams_data   = validated_data.pop('teams', None)
+        members_data = validated_data.pop('members', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if teams_data is not None:
+            instance.teams.all().delete()
+            for t_data in teams_data:
+                t_data.pop('id', None)
+                t_data.pop('service', None)
+                ProjectServiceTeam.objects.create(service=instance, **t_data)
+        if members_data is not None:
+            instance.members.all().delete()
+            for m_data in members_data:
+                m_data.pop('id', None)
+                m_data.pop('service', None)
+                ProjectServiceMember.objects.create(service=instance, **m_data)
+        return instance
+
+
+class ProjectSummarySerializer(serializers.ModelSerializer):
+    total_invoiced = serializers.SerializerMethodField()
+    total_paid = serializers.SerializerMethodField()
+    total_balance_due = serializers.SerializerMethodField()
+    business_address_id = serializers.SerializerMethodField()
+    legal_name = serializers.SerializerMethodField()
+    invoice_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Project
+        fields = ['id', 'name', 'total_invoiced', 'total_paid', 'total_balance_due', 'business_address_id', 'legal_name', 'invoice_count']
+
+    def get_total_invoiced(self, obj):
+        # Aggregate totals from all invoices linked to this project's business addresses
+        # Note the plural 'projects' due to M2M relationship
+        return Invoice.objects.filter(client_company__projects=obj).aggregate(total=models.Sum('total_amount'))['total'] or 0
+
+    def get_total_paid(self, obj):
+        return Invoice.objects.filter(client_company__projects=obj).aggregate(total=models.Sum('total_paid'))['total'] or 0
+
+    def get_total_balance_due(self, obj):
+        return Invoice.objects.filter(client_company__projects=obj).aggregate(total=models.Sum('balance_due'))['total'] or 0
+
+    def get_business_address_id(self, obj):
+        # Returns the ID of the first associated business address
+        address = obj.project_business_addresses.first()
+        return address.id if address else None
+
+    def get_legal_name(self, obj):
+        # Returns the legal name of the first associated business address
+        address = obj.project_business_addresses.first()
+        return address.legal_name if address else None
+
+    def get_invoice_count(self, obj):
+        # Returns the number of invoices linked to this project's business addresses
+        return Invoice.objects.filter(client_company__projects=obj).count()
+
+
+class ProjectSerializer(serializers.ModelSerializer):
+    """
+    Full nested CREATE / UPDATE for a Project.
+    All related models now use ForeignKey (reverse relations) instead of M2M.
+    """
+
+    # Reverse FK nested fields
+    project_base_informations  = ProjectBaseInformationSerializer(many=True, required=False)
+    project_excutions          = ProjectExcutionSerializer(many=True, required=False)
+    project_finances           = ProjectFinanceSerializer(many=True, required=False)
+    project_domains            = ProjectDomainSerializer(many=True, required=False)
+    project_servers            = ProjectServerSerializer(many=True, required=False)
+    project_clients            = ProjectClientSerializer(many=True, required=False)
+    project_teams              = ProjectTeamSerializer(many=True, required=False)
+    project_team_members       = ProjectTeamMemberSerializer(many=True, required=False)
+    services                   = ProjectServiceSerializer(many=True, required=False)
+    project_documents          = ProjectDocumentSerializer(many=True, required=False)
+
+    # ManyToMany: Project Business Addresses
+    project_business_addresses = ProjectBusinessAddressSerializer(many=True, required=False)
+
+
+    # FK: write PK, read detail
+    project_nature_detail = ProjectNatureSerializer(source='project_nature', read_only=True)
+    project_nature = serializers.PrimaryKeyRelatedField(
+        queryset=ProjectNature.objects.all(), required=False, allow_null=True
+    )
+
+    class Meta:
+        model = Project
+        fields = [
+            'id', 'name', 'description', 'status', 'created_at', 'updated_at',
+            'project_nature', 'project_nature_detail',
+            'project_business_addresses',
+            'project_base_informations', 'project_excutions',
+            'project_finances', 'project_domains', 'project_servers',
+            'project_clients',
+            'project_teams', 'project_team_members', 'services', 'project_documents',
+        ]
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
+    # ── Helper ──────────────────────────────────────────────────
+
+    def _create_fk_children(self, model_class, project, data_list):
+        """Create FK children, injecting `project` automatically."""
+        for data in data_list:
+            data.pop('id', None)
+            data.pop('project', None)
+            model_class.objects.create(project=project, **data)
+
+    def _sync_fk_children(self, model_class, project, data_list):
+        """Sync FK children: Update existing, Create new, Delete omitted."""
+        if data_list is None:
+            return
+            
+        existing_items = {obj.id: obj for obj in model_class.objects.filter(project=project)}
+        incoming_ids = [item.get('id') for item in data_list if item.get('id')]
+        
+        # Delete items not in incoming list
+        model_class.objects.filter(project=project).exclude(id__in=incoming_ids).delete()
+        
+        for data in data_list:
+            item_id = data.get('id')
+            data.pop('id', None)
+            data.pop('project', None)
+            if item_id and item_id in existing_items:
+                # Update
+                obj = existing_items[item_id]
+                for attr, value in data.items():
+                    setattr(obj, attr, value)
+                obj.save()
+            else:
+                # Create
+                model_class.objects.create(project=project, **data)
+
+    # ── CREATE ──────────────────────────────────────────────────
+
+    def create(self, validated_data):
+        base_info_data   = validated_data.pop('project_base_informations', [])
+        excution_data    = validated_data.pop('project_excutions', [])
+        finance_data     = validated_data.pop('project_finances', [])
+        domain_data      = validated_data.pop('project_domains', [])
+        server_data      = validated_data.pop('project_servers', [])
+        client_data      = validated_data.pop('project_clients', [])
+        address_data     = validated_data.pop('project_business_addresses', [])
+        team_data        = validated_data.pop('project_teams', [])
+        team_member_data = validated_data.pop('project_team_members', [])
+        service_data     = validated_data.pop('services', [])
+        document_data    = validated_data.pop('project_documents', [])
+
+        project = Project.objects.create(**validated_data)
+
+        # Handle Many-to-Many Business Addresses
+        for addr_data in address_data:
+            addr_id = addr_data.pop('id', None)
+            if addr_id:
+                address = ProjectBusinessAddress.objects.get(id=addr_id)
+                # Update existing address
+                for attr, value in addr_data.items():
+                    setattr(address, attr, value)
+                address.save()
+            else:
+                address = ProjectBusinessAddress.objects.create(**addr_data)
+            address.projects.add(project)
+
+        self._create_fk_children(ProjectBaseInformation, project, base_info_data)
+        self._create_fk_children(ProjectExcution, project, excution_data)
+        self._create_fk_children(ProjectFinance, project, finance_data)
+        self._create_fk_children(ProjectClient, project, client_data)
+        self._create_fk_children(ProjectTeamMember, project, team_member_data)
+        self._create_fk_children(ProjectDocument, project, document_data)
+
+
+        for d_data in domain_data:
+            d_data.pop('id', None)
+            d_data.pop('project', None)
+            provider_data = d_data.pop('provider', [])
+            domain = ProjectDomain.objects.create(project=project, **d_data)
+            for p_data in provider_data:
+                p_data.pop('id', None)
+                provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
+                domain.provider.add(provider)
+
+        for s_data in server_data:
+            s_data.pop('id', None)
+            s_data.pop('project', None)
+            provider_data = s_data.pop('provider', [])
+            server = ProjectServer.objects.create(project=project, **s_data)
+            for p_data in provider_data:
+                p_data.pop('id', None)
+                provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
+                server.provider.add(provider)
+
+        for t_data in team_data:
+            t_data.pop('id', None)
+            t_data.pop('project', None)
+            members_data = t_data.pop('members', [])
+            pt = ProjectTeam.objects.create(project=project, **t_data)
+            for m_data in members_data:
+                m_data.pop('id', None)
+                member = ProjectTeamMember.objects.create(**m_data)
+                pt.members.add(member)
+
+        for svc_data in service_data:
+            svc_data.pop('id', None)
+            svc_data.pop('project', None)
+            svc_teams   = svc_data.pop('teams', [])
+            svc_members = svc_data.pop('members', [])
+            svc = ProjectService.objects.create(project=project, **svc_data)
+            for st_data in svc_teams:
+                st_data.pop('id', None)
+                st_data.pop('service', None)
+                ProjectServiceTeam.objects.create(service=svc, **st_data)
+            for sm_data in svc_members:
+                sm_data.pop('id', None)
+                sm_data.pop('service', None)
+                ProjectServiceMember.objects.create(service=svc, **sm_data)
+
+        return project
+
+    # ── UPDATE ──────────────────────────────────────────────────
+
+    def update(self, instance, validated_data):
+        base_info_data   = validated_data.pop('project_base_informations', None)
+        excution_data    = validated_data.pop('project_excutions', None)
+        finance_data     = validated_data.pop('project_finances', None)
+        domain_data      = validated_data.pop('project_domains', None)
+        server_data      = validated_data.pop('project_servers', None)
+        client_data      = validated_data.pop('project_clients', None)
+        address_data     = validated_data.pop('project_business_addresses', None)
+        team_data        = validated_data.pop('project_teams', None)
+        team_member_data = validated_data.pop('project_team_members', None)
+        service_data     = validated_data.pop('services', None)
+        document_data    = validated_data.pop('project_documents', None)
+
+        if address_data is not None:
+            # Sync Many-to-Many addresses
+            new_address_list = []
+            for addr_data in address_data:
+                addr_id = addr_data.pop('id', None)
+                if addr_id:
+                    address = ProjectBusinessAddress.objects.get(id=addr_id)
+                    # Update fields if provided
+                    for attr, value in addr_data.items():
+                        setattr(address, attr, value)
+                    address.save()
+                else:
+                    address = ProjectBusinessAddress.objects.create(**addr_data)
+                new_address_list.append(address)
+            
+            # Use .set() to update the M2M relationship
+            instance.project_business_addresses.set(new_address_list)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if base_info_data is not None:
+            self._sync_fk_children(ProjectBaseInformation, instance, base_info_data)
+        if excution_data is not None:
+            self._sync_fk_children(ProjectExcution, instance, excution_data)
+        if finance_data is not None:
+            self._sync_fk_children(ProjectFinance, instance, finance_data)
+        if client_data is not None:
+            self._sync_fk_children(ProjectClient, instance, client_data)
+        if team_member_data is not None:
+            self._sync_fk_children(ProjectTeamMember, instance, team_member_data)
+        if document_data is not None:
+            self._sync_fk_children(ProjectDocument, instance, document_data)
+
+        if domain_data is not None:
+            incoming_ids = [d.get('id') for d in domain_data if d.get('id')]
+            instance.project_domains.exclude(id__in=incoming_ids).delete()
+            existing_domains = {d.id: d for d in instance.project_domains.all()}
+
+            for d_data in domain_data:
+                d_id = d_data.get('id')
+                d_data.pop('id', None)
+                d_data.pop('project', None)
+                provider_data = d_data.pop('provider', [])
+                if d_id and d_id in existing_domains:
+                    domain = existing_domains[d_id]
+                    for attr, value in d_data.items(): setattr(domain, attr, value)
+                    domain.save()
+                else:
+                    domain = ProjectDomain.objects.create(project=instance, **d_data)
+                
+                domain.provider.all().delete()
+                for p_data in provider_data:
+                    p_data.pop('id', None)
+                    provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
+                    domain.provider.add(provider)
+
+        if server_data is not None:
+            incoming_ids = [s.get('id') for s in server_data if s.get('id')]
+            instance.project_servers.exclude(id__in=incoming_ids).delete()
+            existing_servers = {s.id: s for s in instance.project_servers.all()}
+
+            for s_data in server_data:
+                s_id = s_data.get('id')
+                s_data.pop('id', None)
+                s_data.pop('project', None)
+                provider_data = s_data.pop('provider', [])
+                if s_id and s_id in existing_servers:
+                    server = existing_servers[s_id]
+                    for attr, value in s_data.items(): setattr(server, attr, value)
+                    server.save()
+                else:
+                    server = ProjectServer.objects.create(project=instance, **s_data)
+
+                server.provider.all().delete()
+                for p_data in provider_data:
+                    p_data.pop('id', None)
+                    provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
+                    server.provider.add(provider)
+
+        if team_data is not None:
+            incoming_ids = [t.get('id') for t in team_data if t.get('id')]
+            instance.project_teams.exclude(id__in=incoming_ids).delete()
+            existing_teams = {t.id: t for t in instance.project_teams.all()}
+
+            for t_data in team_data:
+                t_id = t_data.get('id')
+                t_data.pop('id', None)
+                t_data.pop('project', None)
+                members_data = t_data.pop('members', [])
+                if t_id and t_id in existing_teams:
+                    pt = existing_teams[t_id]
+                    for attr, value in t_data.items(): setattr(pt, attr, value)
+                    pt.save()
+                else:
+                    pt = ProjectTeam.objects.create(project=instance, **t_data)
+
+                pt.members.all().delete()
+                for m_data in members_data:
+                    m_data.pop('id', None)
+                    member = ProjectTeamMember.objects.create(**m_data)
+                    pt.members.add(member)
+
+        if service_data is not None:
+            incoming_ids = [s.get('id') for s in service_data if s.get('id')]
+            instance.services.exclude(id__in=incoming_ids).delete()
+            existing_svcs = {s.id: s for s in instance.services.all()}
+
+            for svc_data in service_data:
+                svc_id = svc_data.get('id')
+                svc_data.pop('id', None)
+                svc_data.pop('project', None)
+                svc_teams = svc_data.pop('teams', [])
+                svc_members = svc_data.pop('members', [])
+                if svc_id and svc_id in existing_svcs:
+                    svc = existing_svcs[svc_id]
+                    for attr, value in svc_data.items(): setattr(svc, attr, value)
+                    svc.save()
+                else:
+                    svc = ProjectService.objects.create(project=instance, **svc_data)
+
+                svc.teams.all().delete()
+                for st_data in svc_teams:
+                    st_data.pop('id', None)
+                    st_data.pop('service', None)
+                    ProjectServiceTeam.objects.create(service=svc, **st_data)
+                
+                svc.members.all().delete()
+                for sm_data in svc_members:
+                    sm_data.pop('id', None)
+                    sm_data.pop('service', None)
+                    ProjectServiceMember.objects.create(service=svc, **sm_data)
+
+        return instance

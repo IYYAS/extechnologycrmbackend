@@ -1,0 +1,70 @@
+from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
+from .models import (
+    User, Role, ProjectClient, ProjectBusinessAddress,
+    DomainOrServerThirdPartyServiceProvider, ProjectDomain, ProjectServer,
+    ProjectFinance, Team, ProjectTeam, ProjectNature, Project,
+    ProjectBaseInformation, ProjectExcution, ProjectTeamMember,
+    ProjectService, EmployeeDailyActivity, ActivityLog, Invoice,
+    InvoiceItem, Payment, ActivityExceedComment, Notification,
+    EmployeeLeave, Company, CompanyProfile, Salary, Attendance,
+    Employee, OtherIncome, OtherExpense, UserSalary
+)
+
+# Custom UserAdmin to handle the custom User model
+class CustomUserAdmin(UserAdmin):
+    model = User
+    list_display = ['username', 'email', 'phone_number', 'is_staff']
+    fieldsets = UserAdmin.fieldsets + (
+        (None, {'fields': ('phone_number', 'designation', 'roles', 'is_phone_verified', 'is_email_verified')}),
+    )
+    add_fieldsets = UserAdmin.add_fieldsets + (
+        (None, {'fields': ('phone_number', 'designation', 'roles', 'is_phone_verified', 'is_email_verified')}),
+    )
+
+# Register all models
+admin.site.register(User, CustomUserAdmin)
+admin.site.register(Role)
+admin.site.register(ProjectClient)
+admin.site.register(ProjectBusinessAddress)
+admin.site.register(DomainOrServerThirdPartyServiceProvider)
+admin.site.register(ProjectDomain)
+admin.site.register(ProjectServer)
+admin.site.register(ProjectFinance)
+admin.site.register(Team)
+admin.site.register(ProjectTeam)
+admin.site.register(ProjectNature)
+admin.site.register(Project)
+admin.site.register(ProjectBaseInformation)
+admin.site.register(ProjectExcution)
+admin.site.register(ProjectTeamMember)
+admin.site.register(ProjectService)
+admin.site.register(EmployeeDailyActivity)
+admin.site.register(ActivityLog)
+admin.site.register(Invoice)
+admin.site.register(InvoiceItem)
+admin.site.register(Payment)
+admin.site.register(ActivityExceedComment)
+admin.site.register(Notification)
+admin.site.register(EmployeeLeave)
+admin.site.register(Company)
+admin.site.register(CompanyProfile)
+@admin.register(Salary)
+class SalaryAdmin(admin.ModelAdmin):
+    list_display = (
+        "employee",
+        "start_date",
+        "end_date",
+        "working_days",
+        "present_days",
+        "basic",
+        "total_salary",
+        "status"
+    )
+
+
+admin.site.register(Attendance)
+admin.site.register(Employee)
+admin.site.register(OtherIncome)
+admin.site.register(OtherExpense)
+admin.site.register(UserSalary)
