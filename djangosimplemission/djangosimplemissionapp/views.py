@@ -1,3 +1,4 @@
+from django.contrib.auth.models import Permission
 from rest_framework import views, viewsets, filters
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -19,7 +20,7 @@ from .serializers import (
     ProjectTeamSerializer,ProjectNatureSerializer,
     ProjectSerializer,ProjectBaseInformationSerializer,ProjectExcutionSerializer,ProjectTeamMemberSerializer,ProjectServiceSerializer,
     EmployeeDailyActivitySerializer,ActivityLogSerializer,InvoiceSerializer,InvoiceItemSerializer,PaymentSerializer,ActivityExceedCommentSerializer,
-    NotificationSerializer,EmployeeLeaveSerializer,CompanySerializer,CompanyProfileSerializer,SalarySerializer,AttendanceSerializer,EmployeeSerializer,OtherIncomeSerializer,OtherExpenseSerializer,RoleSerializer,
+    NotificationSerializer,EmployeeLeaveSerializer,CompanySerializer,CompanyProfileSerializer,SalarySerializer,AttendanceSerializer,EmployeeSerializer,OtherIncomeSerializer,OtherExpenseSerializer,RoleSerializer, PermissionSerializer,
     ProjectDocumentSerializer, ProjectSummarySerializer, ClientAdvanceSerializer, ClientSummarySerializer, UserSalarySerializer
 )
 
@@ -49,7 +50,13 @@ class UserListAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if any(role in ['SuperAdmin', 'Admin', 'Billing'] for role in request.user.role_names):
+        # Admins or users with specific permission can see all users
+        is_privileged = any(role.upper() in ['SUPERADMIN', 'ADMIN', 'BILLING'] for role in request.user.role_names) or \
+                        request.user.has_perm('djangosimplemissionapp.view_all_employee_performance') or \
+                        request.user.has_perm('djangosimplemissionapp.view_all_activities') or \
+                        request.user.has_perm('djangosimplemissionapp.view_all_team_performance')
+        
+        if is_privileged:
             users = User.objects.all()
         else:
             # Other users can only see themselves
@@ -94,8 +101,13 @@ class UserDetailAPIView(views.APIView):
     def get(self, request, pk):
         user = self.get_object(pk)
         
-        # Privacy check: Only SuperAdmin/Admin can view other profiles
-        if not any(role in ['SuperAdmin', 'Admin', 'Billing'] for role in request.user.role_names) and request.user.id != user.id:
+        # Privacy check: Only SuperAdmin/Admin or users with specific permission can view other profiles
+        is_privileged = any(role.upper() in ['SUPERADMIN', 'ADMIN', 'BILLING'] for role in request.user.role_names) or \
+                        request.user.has_perm('djangosimplemissionapp.view_all_employee_performance') or \
+                        request.user.has_perm('djangosimplemissionapp.view_all_activities') or \
+                        request.user.has_perm('djangosimplemissionapp.view_all_team_performance')
+        
+        if not is_privileged and request.user.id != user.id:
              return Response({'error': 'Permission denied. You can only view your own profile.'}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = UserSerializer(user, context={'request': request})
@@ -131,10 +143,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         user = self.user
 
         data['is_logged_in'] = True
-        data['roles'] = user.role_names
-
+        data['role'] = user.role.name if user.role else None
+        data['permissions'] = list(user.role.permissions.values_list('codename', flat=True)) if user.role else []
         data['is_superuser'] = user.is_superuser
-
 
         data['user'] = {
             'id': user.id,
@@ -144,7 +155,10 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'last_name': user.last_name,
             'phone_number': user.phone_number,
             'designation': user.designation,
-            'roles': user.role_names
+            'is_superuser': user.is_superuser,
+            'role': user.role.name if user.role else None,
+            'roles': [{'name': user.role.name}] if user.role else [],
+            'permissions': data['permissions']
         }
         return data
 
@@ -179,6 +193,28 @@ class RoleDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Role.objects.all()
     serializer_class = RoleSerializer
     permission_classes = [IsAuthenticated]
+
+class PermissionListAPIView(views.APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        perms = Permission.objects.all().order_by('codename')
+        serializer = PermissionSerializer(perms, many=True)
+        return Response([p['codename'] for p in serializer.data])
+
+class RoleCreateAPIView(views.APIView):
+    permission_classes = [IsAuthenticated]
+    def post(self, request):
+        name = request.data.get('name', '').strip().upper()
+        if not name:
+            return Response({'error': 'Role name is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        perms_codenames = request.data.get('permissions', [])
+        
+        role, created = Role.objects.get_or_create(name=name)
+        permissions = Permission.objects.filter(codename__in=perms_codenames)
+        role.permissions.set(permissions)
+        
+        return Response({'message': f'Role {"created" if created else "updated"} with {permissions.count()} permissions'}, status=status.HTTP_201_CREATED)
 
 
 class AdminChangeUserPasswordView(views.APIView):
@@ -417,9 +453,20 @@ class ProjectServiceDetailAPIView(RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
 class EmployeeDailyActivityListCreateAPIView(ListCreateAPIView):
-    queryset = EmployeeDailyActivity.objects.all()
+    # queryset = EmployeeDailyActivity.objects.all()  # Removed in favor of dynamic filtering
     serializer_class = EmployeeDailyActivitySerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        can_view_all = self.request.user.has_perm('djangosimplemissionapp.view_all_activities')
+        can_view_own = self.request.user.has_perm('djangosimplemissionapp.view_own_activities') or can_view_all
+        
+        if not (can_view_all or can_view_own):
+            return EmployeeDailyActivity.objects.none()
+
+        if can_view_all:
+            return EmployeeDailyActivity.objects.all()
+        return EmployeeDailyActivity.objects.filter(employee=self.request.user)
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
     search_fields = ['description', 'employee__username', 'project__name', 'project_service__name']
@@ -491,9 +538,15 @@ class EmployeeDailyActivityListCreateAPIView(ListCreateAPIView):
         return Response(serializer.data)
 
 class EmployeeSpecificActivityListAPIView(APIView):
-    permission_classes = [IsAuthenticated, IsAdmin | IsSuperAdmin]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, employee_id):
+        # 0. Permission check
+        can_view_all = request.user.has_perm('djangosimplemissionapp.view_all_activities')
+        can_view_own = request.user.has_perm('djangosimplemissionapp.view_own_activities') or can_view_all
+        
+        if not (can_view_all or (can_view_own and request.user.id == int(employee_id))):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
         # 1. Fetch activities for the specified employee
         activities = EmployeeDailyActivity.objects.filter(employee_id=employee_id).order_by('-date', '-created_at')
         
@@ -532,6 +585,15 @@ class EmployeeWorkDetailsAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, employee_id):
+        # 0. Permission check for viewing work details
+        # For simplicity, we leverage the same 'view_all_activities' / 'view_own_activities' or keep it open for self.
+        can_view_all = request.user.has_perm('djangosimplemissionapp.view_all_activities') or \
+                       request.user.has_perm('djangosimplemissionapp.view_all_employee_performance')
+        
+        is_self = request.user.id == int(employee_id)
+        
+        if not (can_view_all or is_self):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
         from .models import ProjectTeamMember, ProjectServiceMember, EmployeeDailyActivity
         
         # 1. Projects involved
@@ -618,9 +680,15 @@ class EmployeeWorkDetailsAPIView(APIView):
         return Response(data, status=status.HTTP_200_OK)
 
 class EmployeeDailyActivityDetailAPIView(RetrieveUpdateDestroyAPIView):
-    queryset = EmployeeDailyActivity.objects.all()
+    # queryset = EmployeeDailyActivity.objects.all()
     serializer_class = EmployeeDailyActivitySerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        can_view_all = self.request.user.has_perm('djangosimplemissionapp.view_all_activities')
+        if can_view_all:
+            return EmployeeDailyActivity.objects.all()
+        return EmployeeDailyActivity.objects.filter(employee=self.request.user)
 
 class ActivityLogListCreateAPIView(ListCreateAPIView):
     queryset = ActivityLog.objects.all()
@@ -992,10 +1060,16 @@ class EmployeePerformanceAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        can_view_all = request.user.has_perm('djangosimplemissionapp.view_all_employee_performance')
+        can_view_own = request.user.has_perm('djangosimplemissionapp.view_own_employee_performance') or can_view_all
+
+        if not (can_view_all or can_view_own):
+            return Response({'error': 'You do not have permission to view employee performance.'}, status=status.HTTP_403_FORBIDDEN)
+
         employee_id = request.query_params.get('employee_id')
         if employee_id:
-            if not any(r in ['SuperAdmin', 'Admin', 'TeamHead'] for r in request.user.role_names):
-                return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+            if not can_view_all:
+                return Response({'error': 'Permission denied to view other employee performance.'}, status=status.HTTP_403_FORBIDDEN)
             try:
                 employee = User.objects.get(pk=employee_id)
             except User.DoesNotExist:
@@ -1310,56 +1384,54 @@ class TeamPerformanceAPIView(APIView):
         }
 
     def get(self, request):
-        is_admin = any(r in ['SuperAdmin', 'Admin'] for r in request.user.role_names)
+        # 1. Permission checks
+        role_names_upper = [r.upper() for r in request.user.role_names]
+        is_admin_flag = any(r in ['SUPERADMIN', 'ADMIN'] for r in role_names_upper)
+        
+        def check_perm(codename):
+            if request.user.is_superuser or is_admin_flag: return True
+            if request.user.has_perm(f'djangosimplemissionapp.{codename}'): return True
+            if request.user.role and request.user.role.permissions.filter(codename=codename).exists():
+                return True
+            return False
+
+        can_view_all = check_perm('view_all_team_performance')
+        can_view_own = check_perm('view_own_team_performance') or can_view_all
+
+        if not (can_view_all or can_view_own):
+            return Response({'error': 'You do not have permission to view team performance.'}, status=status.HTTP_403_FORBIDDEN)
+
+        # 2. Determine base queryset
+        if can_view_all:
+            queryset = Team.objects.all()
+        else:
+            # Users with "Own Team" only see teams where they are lead or member
+            queryset = Team.objects.filter(
+                Q(team_lead=request.user) | Q(members=request.user)
+            ).distinct()
+
+        # 3. Handle specific team drill-down if requested
         team_id = request.query_params.get('team_id')
-
-        # Single team requested explicitly
         if team_id:
-            if not any(r in ['SuperAdmin', 'Admin', 'TeamHead'] for r in request.user.role_names):
-                return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-            try:
-                team = Team.objects.get(pk=team_id)
-            except Team.DoesNotExist:
-                raise Http404
-            
-            stats = self._get_team_stats(team)
-            summary = {
-                'total_pending': stats.pop('_pending'),
-                'total_completed': stats.pop('_completed'),
-                'total_inprogress': stats.pop('_progressing'),
-                **stats
-            }
-            return Response(summary, status=status.HTTP_200_OK)
+            queryset = queryset.filter(pk=team_id)
+            if not queryset.exists():
+                return Response({'error': 'Team not found or access denied.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Admin / SuperAdmin — return all teams
-        if is_admin:
-            teams = Team.objects.all()
-            all_stats = [self._get_team_stats(t) for t in teams]
-            
-            total_pending = sum(s.pop('_pending') for s in all_stats)
-            total_completed = sum(s.pop('_completed') for s in all_stats)
-            total_inprogress = sum(s.pop('_progressing') for s in all_stats)
+        # 4. Process stats
+        all_stats = [self._get_team_stats(t) for t in queryset]
+        
+        total_pending = sum(s.pop('_pending', 0) for s in all_stats)
+        total_completed = sum(s.pop('_completed', 0) for s in all_stats)
+        total_inprogress = sum(s.pop('_progressing', 0) for s in all_stats)
 
-            return Response({
-                'total_teams': len(all_stats),
-                'total_pending': total_pending,
-                'total_completed': total_completed,
-                'total_inprogress': total_inprogress,
-                'teams': all_stats,
-            }, status=status.HTTP_200_OK)
-
-        # TeamHead — return their own team
-        team = Team.objects.filter(team_lead=request.user).first()
-        if not team:
-            team = Team.objects.filter(members=request.user).first()
-        if not team:
+        # 5. Handle empty cases for better UX
+        if not all_stats and not can_view_all:
             return Response({'error': 'No team found for your account.'}, status=status.HTTP_404_NOT_FOUND)
-            
-        stats = self._get_team_stats(team)
-        summary = {
-            'total_pending': stats.pop('_pending'),
-            'total_completed': stats.pop('_completed'),
-            'total_inprogress': stats.pop('_progressing'),
-            **stats
-        }
-        return Response(summary, status=status.HTTP_200_OK)
+
+        return Response({
+            'total_teams': len(all_stats),
+            'total_pending': total_pending,
+            'total_completed': total_completed,
+            'total_inprogress': total_inprogress,
+            'teams': all_stats,
+        }, status=status.HTTP_200_OK)

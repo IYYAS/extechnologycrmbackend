@@ -1,5 +1,5 @@
 from django.db import models
-from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.contrib.auth.models import AbstractUser, BaseUserManager, Permission
 from decimal import Decimal
 from django.utils import timezone
 from django.db.models.signals import post_save, post_delete ,m2m_changed
@@ -43,13 +43,15 @@ class UserManager(BaseUserManager):
 
         # Assign SuperAdmin role
         superadmin_role, _ = Role.objects.get_or_create(name='SuperAdmin')
-        user.roles.add(superadmin_role)
-        user.sync_permissions()
+        user.role = superadmin_role
+        user.save()
+        # user.sync_permissions() # This might be deprecated, removing for now if not defined
 
         return user
 
 class Role(models.Model):
-    name = models.CharField(max_length=50, unique=True)
+    name = models.CharField(max_length=100, unique=True)
+    permissions = models.ManyToManyField(Permission, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -63,12 +65,18 @@ class User(AbstractUser):
     is_phone_verified = models.BooleanField(default=False)
     is_email_verified = models.BooleanField(default=False)
     designation = models.CharField(max_length=100, blank=True, null=True)
-    roles = models.ManyToManyField(Role, related_name='users', blank=True)
+    role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name='users')
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
     objects = UserManager()
     USERNAME_FIELD = 'username'
     REQUIRED_FIELDS = ['email']  # Keep empty if username is login field
+
+    class Meta:
+        permissions = [
+            ("view_all_employee_performance", "Can view all employee performance"),
+            ("view_own_employee_performance", "Can view own employee performance"),
+        ]
 
     def __str__(self):
         return self.username
@@ -76,45 +84,74 @@ class User(AbstractUser):
 
     @property
     def role_names(self):
-        return list(self.roles.values_list('name', flat=True))
+        names = []
+        if self.role and self.role.name:
+            names.append(self.role.name)
+        if self.is_superuser and 'SuperAdmin' not in names:
+            names.append('SuperAdmin')
+        return names
 
     def has_role(self, role_name):
-        return self.roles.filter(name=role_name).exists()
+        if self.is_superuser:
+            return True
+        return self.role.name.upper() == role_name.upper() if self.role else False
 
-    def has_any_role(self, roles):
-        return self.roles.filter(name__in=roles).exists()
+    def has_any_role(self, roles_list):
+        if self.is_superuser:
+            return True
+        if not self.role:
+            return False
+        roles_upper = [r.upper() for r in roles_list]
+        return self.role.name.upper() in roles_upper
 
+    def has_perm(self, perm, obj=None):
+        if self.is_superuser:
+            return True
+        if self.role:
+            # Check if perm is in role permissions (e.g. 'app.codename' or just 'codename')
+            codename = perm.split('.')[-1]
+            if self.role.permissions.filter(codename=codename).exists():
+                return True
+        return super().has_perm(perm, obj)
 
+    def has_module_perms(self, app_label):
+        if self.is_superuser:
+            return True
+        if self.role:
+            if self.role.permissions.filter(content_type__app_label=app_label).exists():
+                return True
+        return super().has_module_perms(app_label)
 
     @property
     def is_admin(self):
-        return self.has_any_role(['Admin', 'SuperAdmin'])
+        return self.is_superuser or self.has_any_role(['Admin', 'SuperAdmin'])
 
     @property
     def is_billing(self):
-        return self.has_any_role(['Billing', 'SuperAdmin'])
+        return self.is_superuser or self.has_any_role(['Billing', 'SuperAdmin'])
 
     @property
     def is_teamhead(self):
-        return self.has_role('TeamHead')
+        return self.is_superuser or self.has_role('TeamHead')
 
     @property
     def is_developer(self):
-        return self.has_role('Developer')
+        return self.is_superuser or self.has_role('Developer')
 
-  
     def sync_permissions(self):
         is_super = self.has_role('SuperAdmin')
         is_staff = self.has_any_role(['SuperAdmin', 'Admin', 'Billing'])
+        
+        # Use update() to bypass signals and avoid infinite recursion
+        User.objects.filter(id=self.id).update(
+            is_superuser=is_super,
+            is_staff=is_staff
+        )
 
-        self.is_superuser = is_super
-        self.is_staff = is_staff
-        self.save(update_fields=['is_superuser', 'is_staff'])
 
-
-@receiver(m2m_changed, sender=User.roles.through)
-def update_user_permissions(sender, instance, action, **kwargs):
-    if action in ["post_add", "post_remove", "post_clear"]:
+@receiver(post_save, sender=User)
+def update_user_permissions(sender, instance, created, **kwargs):
+    if not created:
         instance.sync_permissions()
 
 class ProjectClient(models.Model):
@@ -219,6 +256,11 @@ class ProjectDomain(models.Model):
     def __str__(self):
         return self.name or "Unnamed Domain"
 
+    class Meta:
+        permissions = [
+            ("view_domain_stats", "Can view domain analytics and stats"),
+        ]
+
 class ProjectServer(models.Model):
     ACCRUED_BY_CHOICES = (
         ('Extechnology', 'Extechnology'),
@@ -245,6 +287,11 @@ class ProjectServer(models.Model):
     def __str__(self):
         return f"{self.server_type} - {self.name}" or "Unnamed Server"
 
+    class Meta:
+        permissions = [
+            ("view_server_stats", "Can view server analytics and stats"),
+        ]
+
 class ProjectFinance(models.Model):
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_finances', null=True, blank=True)
     project_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Fixed Project Cost (Budget)")
@@ -265,6 +312,13 @@ class Team(models.Model):
 
     def __str__(self):
         return self.name
+
+    class Meta:
+        permissions = [
+            ("view_teamperformance", "Can view team performance analytics"),
+            ("view_all_team_performance", "Can view performance of all teams"),
+            ("view_own_team_performance", "Can view performance of own team only"),
+        ]
 
 
 class ProjectTeam(models.Model):
@@ -320,6 +374,12 @@ class Project(models.Model):
 
     def __str__(self):
         return self.name
+
+    class Meta:
+        permissions = [
+            ("view_analytics",    "Can view analytical dashboard"),
+            ("view_projectstats", "Can view project analytics and stats"),
+        ]
 
 
 class ProjectDocument(models.Model):
@@ -521,6 +581,10 @@ class EmployeeDailyActivity(models.Model):
     class Meta:
         ordering = ['-date', '-created_at']
         verbose_name_plural = "Employee Daily Activities"
+        permissions = [
+            ("view_all_activities", "Can view all employee daily activities"),
+            ("view_own_activities", "Can view own daily activities"),
+        ]
 
     def __str__(self):
         return f"{self.employee.username} - {self.date}"

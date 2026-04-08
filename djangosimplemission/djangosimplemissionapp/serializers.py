@@ -2,6 +2,7 @@ from django.db import models
 from rest_framework import serializers
 from django.utils import timezone
 from decimal import Decimal
+from django.contrib.auth.models import Permission
 from .models import (
     User,Role,ProjectClient,ProjectBusinessAddress,DomainOrServerThirdPartyServiceProvider,
     ProjectDomain,ProjectServer,ProjectFinance,Team,ProjectTeam,ProjectNature,
@@ -11,19 +12,34 @@ from .models import (
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,UserSalary,
     ClientAdvance
 )
+class PermissionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Permission
+        fields = ['id', 'name', 'codename']
+
 class RoleSerializer(serializers.ModelSerializer):
+    permissions = PermissionSerializer(many=True, read_only=True)
+    permission_ids = serializers.PrimaryKeyRelatedField(
+        queryset=Permission.objects.all(),
+        many=True,
+        write_only=True,
+        source='permissions',
+        required=False
+    )
+    
     class Meta:
         model = Role
-        fields = ['id', 'name']
+        fields = ['id', 'name', 'permissions', 'permission_ids']
 
 class UserSerializer(serializers.ModelSerializer):
 
-    roles = RoleSerializer(many=True, read_only=True)
-    role_ids = serializers.PrimaryKeyRelatedField(
+    role = RoleSerializer(read_only=True)
+    role_id = serializers.PrimaryKeyRelatedField(
         queryset=Role.objects.all(),
-        many=True,
         write_only=True,
-        source='roles'
+        source='role',
+        required=False,
+        allow_null=True
     )
 
     class Meta:
@@ -36,45 +52,12 @@ class UserSerializer(serializers.ModelSerializer):
             'last_name',
             'phone_number',
             'designation',
-            'roles',
-            'role_ids',
+            'role',
+            'role_id',
         ]
         extra_kwargs = {
             'password': {'write_only': True}
         }
-
-    def create(self, validated_data):
-        roles = validated_data.pop('roles', [])
-        password = validated_data.pop('password', None)
-
-        user = User(**validated_data)
-
-        if password:
-            user.set_password(password)
-
-        user.save()
-        user.roles.set(roles)
-
-
-        return user
-
-    def update(self, instance, validated_data):
-        roles = validated_data.pop('roles', None)
-        password = validated_data.pop('password', None)
-
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-
-        if password:
-            instance.set_password(password)
-
-        instance.save()
-
-        if roles is not None:
-            instance.roles.set(roles)
-
-
-        return instance
 
 
 class ChangePasswordSerializer(serializers.Serializer):

@@ -33,7 +33,6 @@ from .views import (
     EmployeeListCreateAPIView, EmployeeDetailAPIView,
     UserSalaryListCreateAPIView, UserSalaryDetailAPIView,
     OtherIncomeListCreateAPIView, OtherIncomeDetailAPIView,
-
     OtherExpenseListCreateAPIView, OtherExpenseDetailAPIView,
     ProjectDocumentListCreateAPIView, ProjectDocumentDetailAPIView,
     ClientAdvanceListAPIView,
@@ -44,6 +43,8 @@ from .views import (
     EmployeePerformanceAPIView,
     TeamPerformanceAPIView,
     ApplyAdvanceCreditView,
+    PermissionListAPIView,
+    RoleCreateAPIView,
 )
 
 from .financial_views import (
@@ -136,6 +137,8 @@ urlpatterns = [
     path('api/other-incomes/<int:pk>/', OtherIncomeDetailAPIView.as_view(), name='api-other-income-detail'),
     path('api/other-expenses/', OtherExpenseListCreateAPIView.as_view(), name='api-other-expense-list-create'),
     path('api/other-expenses/<int:pk>/', OtherExpenseDetailAPIView.as_view(), name='api-other-expense-detail'),
+    path('api/permissions/', PermissionListAPIView.as_view(), name='api-permission-list'),
+    path('api/roles/create/', RoleCreateAPIView.as_view(), name='api-role-create'),
     path('api/project-documents/', ProjectDocumentListCreateAPIView.as_view(), name='api-project-document-list-create'),
     path('api/project-documents/<int:pk>/', ProjectDocumentDetailAPIView.as_view(), name='api-project-document-detail'),
     path('api/employee-performance/', EmployeePerformanceAPIView.as_view(), name='api-employee-performance'),
