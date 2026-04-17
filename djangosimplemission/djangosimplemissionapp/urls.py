@@ -45,6 +45,7 @@ from .views import (
     ApplyAdvanceCreditView,
     PermissionListAPIView,
     RoleCreateAPIView,
+    UnreadNotificationCountAPIView,
 )
 
 from .financial_views import (
@@ -117,6 +118,7 @@ urlpatterns = [
     path('api/activity-exceed-comments/', ActivityExceedCommentListCreateAPIView.as_view(), name='api-activity-exceed-comment-list-create'),
     path('api/activity-exceed-comments/<int:pk>/', ActivityExceedCommentDetailAPIView.as_view(), name='api-activity-exceed-comment-detail'),
     path('api/notifications/', NotificationListCreateAPIView.as_view(), name='api-notification-list-create'),
+    path('api/notifications/unread-count/', UnreadNotificationCountAPIView.as_view(), name='api-notification-unread-count'),
     path('api/notifications/<int:pk>/', NotificationDetailAPIView.as_view(), name='api-notification-detail'),
     path('api/employee-leaves/', EmployeeLeaveListCreateAPIView.as_view(), name='api-employee-leave-list-create'),
     path('api/employee-leaves/<int:pk>/', EmployeeLeaveDetailAPIView.as_view(), name='api-employee-leave-detail'),

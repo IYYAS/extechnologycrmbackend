@@ -842,12 +842,18 @@ class ApplyAdvanceCreditView(APIView):
         }, status=status.HTTP_200_OK)
 
 class ActivityExceedCommentListCreateAPIView(ListCreateAPIView):
-    queryset = ActivityExceedComment.objects.all()
     serializer_class = ActivityExceedCommentSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
     search_fields = ['comment', 'commented_by__username']
+
+    def get_queryset(self):
+        queryset = ActivityExceedComment.objects.all()
+        activity_id = self.request.query_params.get('activity')
+        if activity_id:
+            queryset = queryset.filter(activity_id=activity_id)
+        return queryset.order_by('-created_at')
 
 class ActivityExceedCommentDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = ActivityExceedComment.objects.all()
@@ -855,17 +861,25 @@ class ActivityExceedCommentDetailAPIView(RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
 class NotificationListCreateAPIView(ListCreateAPIView):
-    queryset = Notification.objects.all()
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     filter_backends = [filters.SearchFilter]
     search_fields = ['message', 'user__username']
 
+    def get_queryset(self):
+        return Notification.objects.filter(user=self.request.user).order_by('-created_at')
+
 class NotificationDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = Notification.objects.all()
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
+
+class UnreadNotificationCountAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        count = Notification.objects.filter(user=request.user, is_read=False).count()
+        return Response({'unread_count': count})
 
 class EmployeeLeaveListCreateAPIView(ListCreateAPIView):
     queryset = EmployeeLeave.objects.all()

@@ -270,11 +270,15 @@ class EmployeeDailyActivitySerializer(serializers.ModelSerializer):
     team_name = serializers.ReadOnlyField(source='team.name')
     project_name = serializers.ReadOnlyField(source='project.name')
     project_service_name = serializers.ReadOnlyField(source='project_service.name')
-
+    comment_count = serializers.SerializerMethodField()
+    
     class Meta:
         model = EmployeeDailyActivity
         fields = '__all__'
         read_only_fields = ['target_work_percentage']
+
+    def get_comment_count(self, obj):
+        return obj.exceed_comments.count()
 
     def _calculate_target(self, validated_data):
         employee = validated_data.get('employee')
@@ -290,13 +294,13 @@ class EmployeeDailyActivitySerializer(serializers.ModelSerializer):
 
         if project_service:
             from .models import ProjectServiceMember
-            assignment = ProjectServiceMember.objects.filter(service=project_service, employee=employee).first()
+            assignment = ProjectServiceMember.objects.filter(service=project_service, employee=employee, allocated_days__gt=0).order_by('-id').first()
             if assignment and assignment.start_date and getattr(assignment, 'allocated_days', 0) > 0:
                 start_date = assignment.start_date
                 allocated_days = assignment.allocated_days
         elif project:
             from .models import ProjectTeamMember
-            assignment = ProjectTeamMember.objects.filter(project=project, employee=employee).first()
+            assignment = ProjectTeamMember.objects.filter(project=project, employee=employee, allocated_days__gt=0).order_by('-id').first()
             if assignment and assignment.start_date and getattr(assignment, 'allocated_days', 0) > 0:
                 start_date = assignment.start_date
                 allocated_days = assignment.allocated_days
@@ -460,6 +464,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
 
 class ActivityExceedCommentSerializer(serializers.ModelSerializer):
+    commenter_name = serializers.ReadOnlyField(source='commented_by.username')
     class Meta:
         model = ActivityExceedComment
         fields = '__all__'

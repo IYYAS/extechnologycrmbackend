@@ -245,41 +245,9 @@ def generate_activity_pdf(activities, context):
     
     elements.append(table)
     
-    # 3. Project Distribution Pie Chart (If multiple projects)
-    from typing import Dict
-    project_hours: Dict[str, float] = {}
-    for activity in activities:
-        p_obj = activity.project
-        p_name = (p_obj.name if p_obj else None) or "Other/Unassigned"
-        h = float(activity.hours_spent or 0)
-        project_hours[p_name] = project_hours.get(p_name, 0.0) + h
-    
-    if len(project_hours) > 1:
-        elements.append(Spacer(1, 15*mm))
-        elements.append(Paragraph("<b>Project Time Distribution (Hours)</b>", styles['Normal']))
-        elements.append(Spacer(1, 5*mm))
-        
-        drawing_pie = Drawing(170*mm, 60*mm)
-        pc = Pie()
-        pc.x = 150
-        pc.y = 10
-        pc.width = 100
-        pc.height = 100
-        pc.data = list(project_hours.values())
-        pc.labels = list(project_hours.keys())
-        pc.sideLabels = True
-        
-        # Color palette
-        colors_list = [colors.HexColor("#3498db"), colors.HexColor("#2ecc71"), colors.HexColor("#e67e22"), colors.HexColor("#9b59b6"), colors.HexColor("#f1c40f")]
-        for i in range(len(pc.data)):
-            pc.slices[i].fillColor = colors_list[i % len(colors_list)]
-            
-        drawing_pie.add(pc)
-        elements.append(drawing_pie)
-
-    # Footer / Summary
+    # Summary Footer
     elements.append(Spacer(1, 10*mm))
-    summary_text = f"Total Activities: {len(activities)}"
+    summary_text = f"Total Activities Logged: {len(activities)}"
     elements.append(Paragraph(summary_text, subtitle_style))
     
     doc.build(elements)
