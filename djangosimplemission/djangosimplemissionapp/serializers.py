@@ -294,26 +294,51 @@ class EmployeeDailyActivitySerializer(serializers.ModelSerializer):
 
         if project_service:
             from .models import ProjectServiceMember
-            assignment = ProjectServiceMember.objects.filter(service=project_service, employee=employee, allocated_days__gt=0).order_by('-id').first()
+            assignment = ProjectServiceMember.objects.filter(
+                service=project_service, employee=employee, allocated_days__gt=0
+            ).order_by('-id').first()
             if assignment and assignment.start_date and getattr(assignment, 'allocated_days', 0) > 0:
                 start_date = assignment.start_date
                 allocated_days = assignment.allocated_days
         elif project:
-            from .models import ProjectTeamMember
-            assignment = ProjectTeamMember.objects.filter(project=project, employee=employee, allocated_days__gt=0).order_by('-id').first()
+            from .models import ProjectTeamMember, ProjectTeam
+
+            # Primary: direct project FK on ProjectTeamMember
+            assignment = ProjectTeamMember.objects.filter(
+                project=project, employee=employee, allocated_days__gt=0
+            ).order_by('-id').first()
+
+            # Fallback 1: find via ProjectTeam.members M2M
+            if not assignment:
+                assignment = ProjectTeamMember.objects.filter(
+                    project_allocations__project=project,
+                    employee=employee,
+                    allocated_days__gt=0
+                ).order_by('-id').first()
+
             if assignment and assignment.start_date and getattr(assignment, 'allocated_days', 0) > 0:
                 start_date = assignment.start_date
                 allocated_days = assignment.allocated_days
+
+            # Fallback 2: use ProjectTeam's own start_date + deadline/end_date
+            if not start_date:
+                team = ProjectTeam.objects.filter(
+                    project=project,
+                    members__employee=employee
+                ).order_by('-id').first()
+                if team and team.start_date:
+                    start_date = team.start_date
+                    end = team.deadline or team.end_date
+                    if end and end > start_date:
+                        allocated_days = (end - start_date).days + 1
 
         if start_date and allocated_days > 0:
             elapsed_days = (activity_date - start_date).days + 1
             if elapsed_days <= 0:
                 return 0
-            
             target = (elapsed_days / allocated_days) * 100
-            
             return min(int(target), 100)
-        
+
         return 0
 
     def create(self, validated_data):
@@ -557,6 +582,8 @@ class ProjectTeamSerializer(serializers.ModelSerializer):
         project_team = ProjectTeam.objects.create(**validated_data)
         for member_data in members_data:
             member_data.pop('id', None)
+            # Always inject the project so target_work_percentage lookup works
+            member_data['project'] = project_team.project
             member = ProjectTeamMember.objects.create(**member_data)
             project_team.members.add(member)
         return project_team
@@ -570,6 +597,8 @@ class ProjectTeamSerializer(serializers.ModelSerializer):
             instance.members.all().delete()
             for member_data in members_data:
                 member_data.pop('id', None)
+                # Always inject the project so target_work_percentage lookup works
+                member_data['project'] = instance.project
                 member = ProjectTeamMember.objects.create(**member_data)
                 instance.members.add(member)
         return instance
