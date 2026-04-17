@@ -426,7 +426,7 @@ class ProjectTeamMember(models.Model):
     role = models.CharField(max_length=100, blank=True, null=True)
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Employee Cost for the project")
     allocated_days = models.IntegerField(default=0, help_text="Days Allowed")
-    actual_days_spent = models.IntegerField(default=0, help_text="Actually Spent Days")
+    actual_days_spent = models.IntegerField(null=True, blank=True, default=0, help_text="Actually Spent Days")
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True, help_text="End Date")
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending', help_text="Task Status")
