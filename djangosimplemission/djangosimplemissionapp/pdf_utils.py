@@ -257,109 +257,71 @@ def generate_activity_pdf(activities, context):
 
 def generate_invoice_pdf(invoice):
     """
-    Generates a PDF for an invoice.
+    Generates a PDF for an invoice matching the ex media template.
     """
     from .models import CompanyProfile
-    from reportlab.platypus import Image
+    from reportlab.platypus import Image, Spacer, Table, TableStyle, Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate
     import os
     from django.conf import settings
-    
+    import io
+
+    # Colors
+    TEXT_MAIN = colors.HexColor("#000000")
+    TEXT_MUTED = colors.HexColor("#4a4a4a")
+    LIGHT_GREY = colors.HexColor("#EAEAEA")
+
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         rightMargin=15*mm,
         leftMargin=15*mm,
-        topMargin=15*mm,
-        bottomMargin=15*mm
+        topMargin=5*mm,
+        bottomMargin=10*mm
     )
     
     elements = []
     styles = getSampleStyleSheet()
     
-    # Custom Styles
-    title_style = ParagraphStyle(
-        'InvoiceTitle',
-        parent=styles['Heading1'],
-        fontSize=24,
-        textColor=colors.HexColor("#2c3e50"),
-        spaceAfter=12,
-        alignment=2 # Right align
-    )
-    
-    label_style = ParagraphStyle(
-        'Label',
-        parent=styles['Normal'],
-        fontSize=10,
-        fontName='Helvetica-Bold',
-        textColor=colors.HexColor("#2c3e50"),
-        leading=14
-    )
-    
-    value_style = ParagraphStyle(
-        'Value',
-        parent=styles['Normal'],
-        fontSize=10,
-        textColor=colors.black,
-        leading=12
-    )
-    
-    cell_style = ParagraphStyle(
-        'TableCell',
-        parent=styles['Normal'],
-        fontSize=9,
-        textColor=colors.black,
-        leading=12
-    )
-
     company = CompanyProfile.objects.first()
-    
-    # Header Layout: Logo (Left) and Invoice Title (Right)
-    header_data = []
-    logo_path = None
+
+    # --- Header ---
+    logo_img = ""
     if company and company.logo:
-        # Construct absolute path for the logo
         logo_path = os.path.join(settings.MEDIA_ROOT, str(company.logo))
         if os.path.exists(logo_path):
-            img = Image(logo_path, width=40*mm, height=15*mm, kind='proportional')
-            header_data = [[img, Paragraph("INVOICE", title_style)]]
-        else:
-            header_data = [["", Paragraph("INVOICE", title_style)]]
-    else:
-        header_data = [["", Paragraph("INVOICE", title_style)]]
+            logo_img = Image(logo_path, width=45*mm, height=22*mm, kind='proportional')
 
-    header_table = Table(header_data, colWidths=[100*mm, 80*mm])
+    right_header = Paragraph(
+        "I N V O I C E", 
+        ParagraphStyle('InvTitle', fontName='Helvetica', fontSize=26, textColor=colors.HexColor("#666666"), alignment=2)
+    )
+    
+    header_table = Table([[logo_img, right_header]], colWidths=[90*mm, 90*mm])
     header_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
         ('ALIGN', (1,0), (1,0), 'RIGHT'),
+        ('LEFTPADDING', (0,0), (-1,-1), 0),
+        ('RIGHTPADDING', (0,0), (-1,-1), 0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 5*mm),
     ]))
     elements.append(header_table)
-    elements.append(Spacer(1, 10*mm))
     
-    # 2. Information Section (Company Details & Client Details)
-    company_name = company.company_name if company else "Extechnology"
-    company_type = company.company_type if company else ""
-    company_email = company.email if company else ""
-    company_phone = company.phone if company else ""
-    company_address = company.address if company else ""
+    # --- Detail Cards (FROM and BILL TO) ---
+    meta_val = ParagraphStyle('MetaVal', fontSize=9, textColor=TEXT_MAIN, leading=12)
     
-    company_info_list = [
-        [Paragraph(f"<b>{company_name}</b>", value_style)],
-        [Paragraph(str(company_address), value_style)] if company_address else [],
-        [Paragraph(f"Email: {company_email}", value_style)] if company_email else [],
-        [Paragraph(f"Phone: {company_phone}", value_style)] if company_phone else [],
-    ]
-    # Filter out empty rows
-    company_info_list = [row for row in company_info_list if row]
-    
+    # LEFT: BILL TO
     client = invoice.client_company
     client_name = client.legal_name if client else "N/A"
-    
     address_parts = []
     if client:
         parts = [client.unit_or_floor, client.building_name, client.street_name, client.city]
         address_parts = [p.strip() for p in parts if p and p.strip()]
-        
         state_pin = ""
         if client.state and client.state.strip():
             state_pin = client.state.strip()
@@ -367,119 +329,188 @@ def generate_invoice_pdf(invoice):
                 state_pin += f" - {client.pin_code.strip()}"
         elif client.pin_code and client.pin_code.strip():
             state_pin = client.pin_code.strip()
-            
         if state_pin:
             address_parts.append(state_pin)
-            
     client_address = ", ".join(address_parts)
     
-    client_info_list = [
-        [Paragraph("<b>BILL TO:</b>", label_style)],
-        [Paragraph(str(client_name), value_style)],
-    ]
-    if client_address:
-        client_info_list.append([Paragraph(str(client_address), value_style)])
+    client_info_lines = [f"{client_name}"]
+    if client_address: client_info_lines.append(client_address)
+    client_info_html = "<br/>".join(client_info_lines)
     
-    # Invoice Details Section
-    inv_details_list = [
-        [Paragraph("Invoice #:", label_style), Paragraph(str(invoice.invoice_number or "N/A"), value_style)],
-        [Paragraph("Date:", label_style), Paragraph(invoice.invoice_date.strftime('%Y-%m-%d') if invoice.invoice_date else "N/A", value_style)],
-        [Paragraph("Due Date:", label_style), Paragraph(invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else "N/A", value_style)],
-        [Paragraph("Status:", label_style), Paragraph(str(invoice.status or "N/A"), value_style)],
-    ]
+    left_table = Table([
+        [Paragraph("<font size='8'>BILL TO</font>", meta_val), ""],
+        ["", Paragraph(client_info_html, meta_val)]
+    ], colWidths=[18*mm, 72*mm])
+    left_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LEFTPADDING', (0,0), (-1,-1), 0),
+        ('RIGHTPADDING', (0,0), (-1,-1), 0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+        ('TOPPADDING', (0,0), (-1,-1), 0),
+        ('BOTTOMPADDING', (0,0), (1,0), -4), # Slight negative padding to pull them closer
+    ]))
+    
+    left_block = left_table
 
-    info_table_data = [
-        [Table(company_info_list, colWidths=[90*mm]), Table(client_info_list, colWidths=[90*mm])]
+    # RIGHT: Invoice Meta Block
+    inv_date_str = invoice.invoice_date.strftime('%d - %m - %Y') if invoice.invoice_date else "N/A"
+    due_date_str = invoice.due_date.strftime('%d - %m - %Y') if invoice.due_date else "N/A"
+    inv_num_str = f"<b>{invoice.invoice_number or 'N/A'}</b>"
+    
+    meta_table_style = ParagraphStyle('MT', fontSize=9, leading=12)
+    
+    rt_data = [
+        [Paragraph("Invoice Number", meta_table_style), Paragraph(":", meta_table_style), Paragraph(inv_num_str, meta_table_style)],
+        [Paragraph("Invoice Date", meta_table_style), Paragraph(":", meta_table_style), Paragraph(inv_date_str, meta_table_style)],
+        [Paragraph("Payment Due", meta_table_style), Paragraph(":", meta_table_style), Paragraph(due_date_str, meta_table_style)],
+        [Paragraph("Amount Due (INR)", meta_table_style), Paragraph(":", meta_table_style), Paragraph(f"<b>{invoice.balance_due:,.2f}</b>", meta_table_style)],
     ]
-    info_table = Table(info_table_data, colWidths=[95*mm, 85*mm])
+    right_table = Table(rt_data, colWidths=[30*mm, 5*mm, 40*mm])
+    right_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 2),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+        ('LEFTPADDING', (0,0), (-1,-1), 2),
+        ('RIGHTPADDING', (0,0), (-1,-1), 2),
+        ('BACKGROUND', (0,3), (-1,3), LIGHT_GREY), # Shaded Amount Due Row
+    ]))
+
+    info_table = Table([[left_block, right_table]], colWidths=[90*mm, 90*mm])
     info_table.setStyle(TableStyle([
         ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('ALIGN', (1,0), (1,0), 'RIGHT'),
+        ('LEFTPADDING', (0,0), (-1,-1), 0),
+        ('RIGHTPADDING', (0,0), (-1,-1), 0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8*mm),
     ]))
     elements.append(info_table)
-    elements.append(Spacer(1, 8*mm))
     
-    # Smaller Detail Table for Invoice #/Date
-    details_table = Table(inv_details_list, colWidths=[30*mm, 50*mm], hAlign='LEFT')
-    details_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-    ]))
-    elements.append(details_table)
-    elements.append(Spacer(1, 15*mm))
+    # --- Items Table ---
+    header_data = ['Service / Item', 'Description', 'Period', 'Rate', 'Qty', 'Total']
+    data = [[Paragraph(h, ParagraphStyle('TH', fontName='Helvetica-Bold', fontSize=9, alignment=1)) for h in header_data]]
     
-    # 3. Items Table
-    data = [['Service Type', 'Description', 'Purchase Date', 'Expiry Date', 'Rate', 'Qty', 'Total']]
+    item_count = 0
     for item in invoice.items.all():
+        item_count += 1
+        period_str = ""
+        if item.purchase_date and item.expairy_date:
+            period_str = f"{item.purchase_date.strftime('%y/%m/%d')} - {item.expairy_date.strftime('%y/%m/%d')}"
+            
         data.append([
-            Paragraph(str(item.service_type or "N/A"), cell_style),
-            Paragraph(str(item.description or ""), cell_style),
-            item.purchase_date.strftime('%Y-%m-%d') if item.purchase_date else "N/A",
-            item.expairy_date.strftime('%Y-%m-%d') if item.expairy_date else "N/A",
-            f"{item.rate:.2f}",
-            str(item.quantity),
-            f"{item.total_price:.2f}"
+            Paragraph(str(item.service_type or "N/A"), ParagraphStyle('TC', alignment=1, fontSize=9)),
+            Paragraph(str(item.description or ""), ParagraphStyle('TCDesc', alignment=1, fontSize=8, textColor=TEXT_MUTED)),
+            Paragraph(period_str, ParagraphStyle('TCPer', alignment=1, fontSize=8, textColor=TEXT_MUTED)),
+            Paragraph(f"{item.rate:,.2f}", ParagraphStyle('TCRate', alignment=1, fontSize=9)),
+            Paragraph(str(item.quantity), ParagraphStyle('TCQty', alignment=1, fontSize=9)),
+            Paragraph(f"{item.total_price:,.2f}", ParagraphStyle('TCTot', alignment=1, fontSize=9))
         ])
         
-    col_widths = [35*mm, 45*mm, 28*mm, 28*mm, 20*mm, 12*mm, 22*mm]
-    table = Table(data, colWidths=col_widths, repeatRows=1)
-    header_color = colors.HexColor("#2c3e50")
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), header_color),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 9),
+    # Pad items to create vertical lines going down to the totals area
+    MIN_ROWS = 8
+    rows_to_pad = max(0, MIN_ROWS - item_count)
+    for _ in range(rows_to_pad):
+        data.append(["", "", "", "", "", ""])
+        
+    col_widths = [30*mm, 45*mm, 35*mm, 20*mm, 15*mm, 35*mm] # total 180mm
+    table = Table(data, colWidths=col_widths)
+    
+    ts = [
+        ('BACKGROUND', (0, 0), (-1, 0), LIGHT_GREY),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
         ('TOPPADDING', (0, 0), (-1, 0), 8),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('ALIGN', (2, 1), (-1, -1), 'RIGHT'),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 9),
-    ]))
-    elements.append(table)
-    elements.append(Spacer(1, 10*mm))
-    
-    # 4. Totals (Right Aligned Table)
-    totals_data = [
-        [Paragraph("Subtotal:", label_style), f"{invoice.subtotal:.2f}"],
-        [Paragraph(f"Tax ({invoice.tax_rate}%):", label_style), f"{invoice.tax_amount:.2f}"],
-        [Paragraph("Discount:", label_style), f"-{invoice.discount_amount:.2f}"],
-        [Paragraph("Total Amount:", label_style), f"{invoice.total_amount:.2f}"],
-        [Paragraph("Total Paid:", label_style), f"{invoice.total_paid:.2f}"],
-        [Paragraph("Balance Due:", label_style), f"{invoice.balance_due:.2f}"],
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 4*mm),
+        ('TOPPADDING', (0, 1), (-1, -1), 4*mm),
     ]
     
-    totals_table = Table(totals_data, colWidths=[40*mm, 30*mm])
-    totals_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('LINEABOVE', (1, 3), (1, 3), 1, colors.black),
-        ('FONTNAME', (1, 3), (1, 3), 'Helvetica-Bold'),
-        ('LINEABOVE', (1, 5), (1, 5), 1, colors.black),
-        ('FONTNAME', (1, 5), (1, 5), 'Helvetica-Bold'),
+    # Inner vertical lines starting from below the header
+    for col in range(1, len(header_data)):
+        ts.append(('LINEBEFORE', (col, 1), (col, -1), 0.5, TEXT_MUTED))
+        
+    table.setStyle(TableStyle(ts))
+    elements.append(table)
+    
+    # Bottom Horizontal line
+    line_table = Table([['']], colWidths=[180*mm])
+    line_table.setStyle(TableStyle([
+        ('LINEABOVE', (0,0), (-1,-1), 0.5, TEXT_MAIN),
+        ('TOPPADDING', (0,0), (-1,-1), 0),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 0),
     ]))
+    elements.append(line_table)
     
-    # Use a container table to push totals to the right
-    container_data = [[None, totals_table]]
-    container_table = Table(container_data, colWidths=[110*mm, 70*mm])
-    elements.append(container_table)
+    # --- Bottom Area ---
+    # Left: Bank Details
+    bank_lines = [Paragraph("<i>Bank Details</i>", ParagraphStyle('BI', fontSize=8, textColor=TEXT_MUTED))]
+    bank_lines.append(Paragraph("_" * 30, ParagraphStyle('BL', fontSize=8, textColor=TEXT_MUTED)))
     
-    # 5. Footer
-    elements.append(Spacer(1, 40*mm))
-    footer_style = ParagraphStyle(
-        'Footer',
+    b_style = ParagraphStyle('BV', fontSize=8, leading=10, fontName='Helvetica-Bold')
+    n_style = ParagraphStyle('BN', fontSize=8, leading=10)
+    company_name = company.company_name if company else "Extechnology"
+    bank_lines.append(Paragraph(company_name.upper(), b_style))
+    if company and company.account_number: bank_lines.append(Paragraph(f"A/c NO. {company.account_number}", n_style))
+    if company and company.bank_name: bank_lines.append(Paragraph(company.bank_name.upper(), b_style))
+    if company and company.ifsc_code: bank_lines.append(Paragraph(f"IFSC: <b>{company.ifsc_code}</b>", n_style))
+    
+    # Right: Totals
+    t_lbl = ParagraphStyle('TLbl', fontSize=9, alignment=2)
+    t_val = ParagraphStyle('TVal', fontSize=9, alignment=2)
+    t_val_bold = ParagraphStyle('TValB', fontSize=9, fontName='Helvetica-Bold', alignment=2)
+
+    totals_data = [
+        [Paragraph("Total", t_lbl), Paragraph(":", t_lbl), Paragraph(f"{invoice.subtotal:,.2f}", t_val_bold)],
+    ]
+    if invoice.tax_amount > 0:
+        totals_data.append([Paragraph(f"Tax ({invoice.tax_rate}%)", t_lbl), Paragraph(":", t_lbl), Paragraph(f"{invoice.tax_amount:,.2f}", t_val_bold)])
+    if invoice.discount_amount > 0:
+        totals_data.append([Paragraph("Discount", t_lbl), Paragraph(":", t_lbl), Paragraph(f"-{invoice.discount_amount:,.2f}", t_val_bold)])
+        
+    totals_data.append([Paragraph("Advance", t_lbl), Paragraph(":", t_lbl), Paragraph(f"{invoice.total_paid:,.2f}" if invoice.total_paid else "", t_val)])
+    totals_data.append([Paragraph("Amount Due (INR)", t_lbl), Paragraph(":", t_lbl), Paragraph(f"{invoice.balance_due:,.2f}", t_val_bold)])
+    
+    totals_table = Table(totals_data, colWidths=[40*mm, 5*mm, 25*mm])
+    tt_style = [
+        ('ALIGN', (0,0), (-1,-1), 'RIGHT'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+        ('TOPPADDING', (0,0), (-1,-1), 3),
+        ('LINEABOVE', (0,-1), (-1,-1), 0.5, TEXT_MAIN),
+        ('LINEBELOW', (0,-1), (-1,-1), 0.5, TEXT_MAIN),
+    ]
+    totals_table.setStyle(TableStyle(tt_style))
+
+    bank_container = Table([[p] for p in bank_lines], colWidths=[80*mm])
+    bank_container.setStyle(TableStyle([('LEFTPADDING', (0,0), (-1,-1), 5*mm), ('BOTTOMPADDING', (0,0), (-1,-1), 0), ('TOPPADDING', (0,0), (-1,-1), 0)]))
+
+    bottom_container = Table([[bank_container, totals_table]], colWidths=[100*mm, 80*mm])
+    bottom_container.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('TOPPADDING', (0,0), (-1,-1), 4*mm)]))
+    elements.append(bottom_container)
+    
+    # --- Footer Line ---
+    elements.append(Spacer(1, 4*mm))
+    
+    footer_text = []
+    if company and company.address:
+        footer_text.append(f"<font name='ZapfDingbats'>&#x27A4;</font> {company.address}") # Arrow for address
+    if company and company.phone:
+        footer_text.append(f"<font name='ZapfDingbats'>&#x2706;</font> {company.phone}") # Phone icon
+    if company and company.email:
+        footer_text.append(f"<font name='ZapfDingbats'>&#x2709;</font> {company.email}") # Envelope icon
+        
+    footer_str = " | ".join(footer_text)
+    
+    f_style = ParagraphStyle(
+        'FooterText',
         parent=styles['Normal'],
-        fontSize=12,
-        textColor=colors.HexColor("#7f8c8d"),
-        alignment=1 # Center
+        fontSize=7,
+        textColor=TEXT_MUTED,
+        alignment=1 
     )
-    elements.append(Paragraph("<b>THANK YOU FOR YOUR BUSINESS!</b>", footer_style))
+    elements.append(Paragraph(footer_str, f_style))
     
     doc.build(elements)
     buffer.seek(0)
     return buffer
-
 def _create_financial_pdf_base(title, data_sections, context, total_text, total_val):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(

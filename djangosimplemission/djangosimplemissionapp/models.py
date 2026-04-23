@@ -924,6 +924,13 @@ class CompanyProfile(models.Model):
     phone        = models.CharField(max_length=30, blank=True, default="")
     address      = models.CharField(max_length=300, blank=True, default="")
     logo         = models.ImageField(upload_to='company_logos/', null=True, blank=True)
+    
+    bank_name = models.CharField(max_length=200, blank=True, default="Federal Bank")
+    account_name = models.CharField(max_length=200, blank=True, default="Exmedia")
+    account_number = models.CharField(max_length=100, blank=True, default="1234567890")
+    ifsc_code = models.CharField(max_length=50, blank=True, default="FDRL0001234")
+    upi_id = models.CharField(max_length=100, blank=True, default="exmedia@upi")
+
     updated_at   = models.DateTimeField(auto_now=True)
 
     class Meta:
