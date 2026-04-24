@@ -36,13 +36,19 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5174",
     "https://extechnolgycrmfrontendcopy.vercel.app",
     "http://server.excrm.in",
-    "http://excrm.in"
+    "http://excrm.in",
+    "https://server.excrm.in",
+    "https://excrm.in"
+
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     "https://extechnolgycrmfrontendcopy.vercel.app",
     "http://server.excrm.in",
-    "http://excrm.in"
+    "http://excrm.in",
+    "https://server.excrm.in",
+    "https://excrm.in"
+    
 ]
 
 CORS_ALLOW_CREDENTIALS = True
