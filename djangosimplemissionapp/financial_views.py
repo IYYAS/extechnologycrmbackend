@@ -551,10 +551,32 @@ class ProjectAnalyticalAPIView(APIView):
             total_teams_count = p_total + s_total
             completed_teams_count = p_done + s_done
 
-            # Expiration Counts (Within 30 days) - Only Unpaid
+            # Expiration Counts (Within 30 days) - Include ALL (Paid + Unpaid) and Only Latest
             soon = today + timedelta(days=30)
-            server_expiring_soon_count = servers.filter(payment_status__iexact='UNPAID', expiration_date__range=[today, soon]).count()
-            domain_expiring_soon_count = domains.filter(payment_status__iexact='UNPAID', expiration_date__range=[today, soon]).count()
+            
+            # Deduplicate servers for this project to get latest only
+            proj_servers = project.project_servers.all().order_by('server_type', 'name', '-expiration_date')
+            latest_proj_servers = []
+            seen_s = set()
+            for s in proj_servers:
+                key = (s.server_type, s.name)
+                if key not in seen_s:
+                    latest_proj_servers.append(s)
+                    seen_s.add(key)
+            
+            server_expiring_soon_count = len([s for s in latest_proj_servers if s.expiration_date and today <= s.expiration_date <= soon])
+
+            # Deduplicate domains for this project
+            proj_domains = project.project_domains.all().order_by('name', '-expiration_date')
+            latest_proj_domains = []
+            seen_d = set()
+            for d in proj_domains:
+                key = (d.name)
+                if key not in seen_d:
+                    latest_proj_domains.append(d)
+                    seen_d.add(key)
+                    
+            domain_expiring_soon_count = len([d for d in latest_proj_domains if d.expiration_date and today <= d.expiration_date <= soon])
 
             services_data = []
             for service in project.services.all():
@@ -630,35 +652,50 @@ class ServerAnalyticsAPIView(APIView):
         today = timezone.now().date()
         next_30_days = today + timedelta(days=30)
 
-        servers = ProjectServer.objects.all()
+        # Get all servers ordered to help deduplication (latest expiration first)
+        all_servers = ProjectServer.objects.all().select_related('project').order_by('project_id', 'server_type', 'name', '-expiration_date')
+        
+        # Deduplicate: Only keep the latest record for each (Project, Type, Name)
+        servers_list_latest = []
+        seen_keys = set()
+        for s in all_servers:
+            key = (s.project_id, s.server_type, s.name)
+            if key not in seen_keys:
+                servers_list_latest.append(s)
+                seen_keys.add(key)
 
-        total_servers = servers.count()
-        paid_servers = servers.filter(payment_status='PAID').count()
-        unpaid_servers = servers.filter(payment_status='UNPAID').count()
-        total_cost = servers.aggregate(total=Sum('cost'))['total'] or 0
+        # Totals based on latest servers only
+        total_servers = len(servers_list_latest)
+        paid_servers_count = len([s for s in servers_list_latest if s.payment_status == 'PAID'])
+        unpaid_servers_count = len([s for s in servers_list_latest if s.payment_status == 'UNPAID'])
+        total_cost = sum([s.cost for s in servers_list_latest if s.cost])
 
-        # Group by server type
-        by_server_type_raw = servers.values('server_type').annotate(count=Count('id'))
-        by_server_type = [{"server_type": item['server_type'], "count": item['count']} for item in by_server_type_raw]
+        # Status counts based on latest servers
+        computed_active = len([s for s in servers_list_latest if s.status and s.status.lower() == 'active'])
+        computed_expired = len([s for s in servers_list_latest if s.status and s.status.lower() == 'expired'])
+        
+        # Expiring Soon: Include BOTH Paid and Unpaid
+        computed_expiring_soon = len([s for s in servers_list_latest if s.expiration_date and today <= s.expiration_date <= next_30_days])
 
-        # Group by accrued by
-        by_accrued_by_raw = servers.values('accrued_by').annotate(count=Count('id'))
-        by_accrued_by = [{"accrued_by": item['accrued_by'], "count": item['count']} for item in by_accrued_by_raw]
+        # Grouping (re-calculating based on latest set)
+        by_server_type_dict = {}
+        by_accrued_by_dict = {}
+        
+        for s in servers_list_latest:
+            by_server_type_dict[s.server_type] = by_server_type_dict.get(s.server_type, 0) + 1
+            by_accrued_by_dict[s.accrued_by] = by_accrued_by_dict.get(s.accrued_by, 0) + 1
+            
+        by_server_type = [{"server_type": k, "count": v} for k, v in by_server_type_dict.items()]
+        by_accrued_by = [{"accrued_by": k, "count": v} for k, v in by_accrued_by_dict.items()]
 
         # All servers detailed list for drill-down
-        servers_list = []
-        
-        # Overview Tally (Now Status-based for Expired/Active, and Payment-aware for Expiring Soon)
-        computed_active = servers.filter(status__iexact='Active').count()
-        computed_expired = servers.filter(status__iexact='Expired').count()
-        computed_expiring_soon = servers.filter(payment_status__iexact='UNPAID', expiration_date__range=[today, next_30_days]).count()
-
-        for s in servers.select_related('project').order_by('expiration_date'):
+        detailed_servers_list = []
+        for s in servers_list_latest:
             days_until_expiry = None
-            if s.expiration_date and s.payment_status != 'PAID':
+            if s.expiration_date:
                 days_until_expiry = (s.expiration_date - today).days
 
-            servers_list.append({
+            detailed_servers_list.append({
                 "id": s.id,
                 "name": s.name,
                 "server_type": s.server_type,
@@ -666,15 +703,15 @@ class ServerAnalyticsAPIView(APIView):
                 "purchase_date": s.purchase_date.strftime('%Y-%m-%d') if s.purchase_date else None,
                 "project": s.project.name if s.project else None,
                 "payment_status": s.payment_status,
-                "status": s.status,                        # Raw DB field
+                "status": s.status,
                 "cost": float(s.cost) if s.cost else 0.0,
                 "accrued_by": s.accrued_by,
                 "purchased_from": s.purchased_from,
                 "days_until_expiry": days_until_expiry,
             })
 
-        # Expiring soon list (subset of servers_list for convenience)
-        expiring_soon = [s for s in servers_list if s["days_until_expiry"] is not None and 0 <= s["days_until_expiry"] <= 30]
+        # Expiring soon list
+        expiring_soon = [s for s in detailed_servers_list if s["days_until_expiry"] is not None and 0 <= s["days_until_expiry"] <= 30]
 
         data = {
             "overview": {
@@ -682,14 +719,14 @@ class ServerAnalyticsAPIView(APIView):
                 "active_servers": computed_active,
                 "expired_servers": computed_expired,
                 "expiring_soon_count": computed_expiring_soon,
-                "paid_servers": paid_servers,
-                "unpaid_servers": unpaid_servers,
+                "paid_servers": paid_servers_count,
+                "unpaid_servers": unpaid_servers_count,
                 "total_cost": float(total_cost)
             },
             "by_server_type": by_server_type,
             "by_accrued_by": by_accrued_by,
             "expiring_soon": expiring_soon,
-            "servers_list": servers_list
+            "servers_list": detailed_servers_list
         }
         return Response(data, status=status.HTTP_200_OK)
 
@@ -705,57 +742,73 @@ class DomainAnalyticsAPIView(APIView):
         today = timezone.now().date()
         next_30_days = today + timedelta(days=30)
 
-        domains = ProjectDomain.objects.all()
+        # Get all domains ordered to help deduplication (latest expiration first)
+        all_domains = ProjectDomain.objects.all().select_related('project').order_by('project_id', 'name', '-expiration_date')
+        
+        # Deduplicate: Only keep the latest record for each (Project, Name)
+        domains_list_latest = []
+        seen_keys = set()
+        for d in all_domains:
+            key = (d.project_id, d.name)
+            if key not in seen_keys:
+                domains_list_latest.append(d)
+                seen_keys.add(key)
 
-        total_domains = domains.count()
-        active_domains = domains.filter(status__iexact='Active').count()
-        expired_domains = domains.filter(status__iexact='Expired').count()
-        paid_domains = domains.filter(payment_status__iexact='PAID').count()
-        unpaid_domains = domains.filter(payment_status__iexact='UNPAID').count()
-        total_cost = domains.aggregate(total=Sum('cost'))['total'] or 0
+        # Totals based on latest domains only
+        total_domains = len(domains_list_latest)
+        active_domains = len([d for d in domains_list_latest if d.status and d.status.lower() == 'active'])
+        expired_domains = len([d for d in domains_list_latest if d.status and d.status.lower() == 'expired'])
+        paid_domains_count = len([d for d in domains_list_latest if d.payment_status == 'PAID'])
+        unpaid_domains_count = len([d for d in domains_list_latest if d.payment_status == 'UNPAID'])
+        total_cost = sum([d.cost for d in domains_list_latest if d.cost])
+
+        # Expiring Soon: Include BOTH Paid and Unpaid
+        computed_expiring_soon = len([d for d in domains_list_latest if d.expiration_date and today <= d.expiration_date <= next_30_days])
 
         # Group by accrued by
-        by_accrued_by_raw = domains.values('accrued_by').annotate(count=Count('id'))
-        by_accrued_by = [{"accrued_by": item['accrued_by'], "count": item['count']} for item in by_accrued_by_raw]
+        by_accrued_by_dict = {}
+        for d in domains_list_latest:
+            by_accrued_by_dict[d.accrued_by] = by_accrued_by_dict.get(d.accrued_by, 0) + 1
+        by_accrued_by = [{"accrued_by": k, "count": v} for k, v in by_accrued_by_dict.items()]
 
         # All domains detailed list for drill-down
-        domains_list = []
-        
-        for d in domains.select_related('project').order_by('expiration_date'):
+        detailed_domains_list = []
+        for d in domains_list_latest:
             days_until_expiry = None
-            if d.expiration_date and d.payment_status != 'PAID':
+            if d.expiration_date:
                 days_until_expiry = (d.expiration_date - today).days
 
-            domains_list.append({
+            detailed_domains_list.append({
                 "id": d.id,
                 "name": d.name,
-                "domain": d.name, # kept for backward compatibility with frontend if it expects 'domain' instead of 'name'
+                "domain": d.name,
                 "expiration_date": d.expiration_date.strftime('%Y-%m-%d') if d.expiration_date else None,
                 "purchase_date": d.purchase_date.strftime('%Y-%m-%d') if d.purchase_date else None,
                 "project": d.project.name if d.project else None,
                 "payment_status": d.payment_status,
-                "status": d.status,                        # Raw DB field
+                "status": d.status,
                 "cost": float(d.cost) if d.cost else 0.0,
                 "accrued_by": d.accrued_by,
                 "purchased_from": d.purchased_from,
                 "days_until_expiry": days_until_expiry,
             })
 
-        # Expiring soon list (subset of domains_list for convenience)
-        expiring_soon = [d for d in domains_list if d["days_until_expiry"] is not None and 0 <= d["days_until_expiry"] <= 30]
+        # Expiring soon list
+        expiring_soon = [d for d in detailed_domains_list if d["days_until_expiry"] is not None and 0 <= d["days_until_expiry"] <= 30]
 
         data = {
             "overview": {
                 "total_domains": total_domains,
                 "active_domains": active_domains,
                 "expired_domains": expired_domains,
-                "paid_domains": paid_domains,
-                "unpaid_domains": unpaid_domains,
+                "expiring_soon_count": computed_expiring_soon,
+                "paid_domains": paid_domains_count,
+                "unpaid_domains": unpaid_domains_count,
                 "total_cost": float(total_cost)
             },
             "by_accrued_by": by_accrued_by,
             "expiring_soon": expiring_soon,
-            "domains_list": domains_list
+            "domains_list": detailed_domains_list
         }
 
         return Response(data, status=status.HTTP_200_OK)
