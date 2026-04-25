@@ -878,8 +878,10 @@ class ActivityExceedComment(models.Model):
 
 class Notification(models.Model):   
     user = models.ForeignKey(User,on_delete=models.CASCADE,related_name='notifications',help_text="User who receives the notification")
+    project = models.ForeignKey('Project', on_delete=models.CASCADE, related_name='notifications', null=True, blank=True)
     activity = models.ForeignKey(EmployeeDailyActivity,on_delete=models.CASCADE,related_name='notifications',null=True,blank=True)
     comment = models.ForeignKey(ActivityExceedComment,on_delete=models.CASCADE,related_name='notifications',null=True,blank=True)
+    notification_type = models.CharField(max_length=50, null=True, blank=True)
     message = models.TextField()
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
