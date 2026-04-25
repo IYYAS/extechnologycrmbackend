@@ -275,7 +275,78 @@ class BalanceSheetView(APIView):
 class ProjectAnalyticalAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def _run_expiry_check(self):
+        """
+        Runs the domain & server expiry notification check.
+        Called automatically whenever this API is triggered.
+        Mirrors the logic in the check_expiries management command.
+        """
+        from .models import Notification, User, Role
+
+        today = timezone.now().date()
+        max_date = today + timedelta(days=30)
+
+        # Find SuperAdmin users
+        try:
+            superadmin_role = Role.objects.get(name='SuperAdmin')
+            superadmins = list(User.objects.filter(role=superadmin_role))
+        except Role.DoesNotExist:
+            superadmins = list(User.objects.filter(is_superuser=True))
+
+        if not superadmins:
+            return
+
+        def create_notification_if_new(recipients, message, project=None, notification_type=None):
+            for user in recipients:
+                already_exists = Notification.objects.filter(
+                    user=user,
+                    message=message,
+                    created_at__date=today
+                ).exists()
+                if not already_exists:
+                    Notification.objects.create(
+                        user=user,
+                        message=message,
+                        project=project,
+                        notification_type=notification_type
+                    )
+
+        # Check Domains
+        expiring_domains = ProjectDomain.objects.filter(
+            expiration_date__gte=today,
+            expiration_date__lte=max_date
+        )
+        for domain in expiring_domains:
+            days_remaining = (domain.expiration_date - today).days
+            message = (
+                f"Domain Expiry Alert: The domain '{domain.name}' for project "
+                f"'{domain.project.name if domain.project else 'N/A'}' is expiring on "
+                f"{domain.expiration_date} ({days_remaining} days remaining). "
+                f"Action Required: Please contact the provider '{domain.purchased_from or 'N/A'}' "
+                f"to renew the domain."
+            )
+            create_notification_if_new(superadmins, message, project=domain.project, notification_type='domain_alert')
+
+        # Check Servers
+        expiring_servers = ProjectServer.objects.filter(
+            expiration_date__gte=today,
+            expiration_date__lte=max_date
+        )
+        for server in expiring_servers:
+            days_remaining = (server.expiration_date - today).days
+            message = (
+                f"Server Expiry Alert: The server '{server.name}' ({server.server_type}) for project "
+                f"'{server.project.name if server.project else 'N/A'}' is expiring on "
+                f"{server.expiration_date} ({days_remaining} days remaining). "
+                f"Action Required: Please ensure payment is processed or contact the provider "
+                f"'{server.purchased_from or 'N/A'}' to avoid service interruption."
+            )
+            create_notification_if_new(superadmins, message, project=server.project, notification_type='server_alert')
+
     def get(self, request):
+        # Auto-trigger expiry check every time this API is called
+        self._run_expiry_check()
+
         from .models import Project, ProjectService, ProjectFinance, ProjectTeam, ProjectServiceTeam
         from rest_framework.pagination import PageNumberPagination
         
