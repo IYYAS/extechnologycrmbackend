@@ -16,10 +16,10 @@ class CustomUserAdmin(UserAdmin):
     model = User
     list_display = ['username', 'email', 'phone_number', 'is_staff']
     fieldsets = UserAdmin.fieldsets + (
-        (None, {'fields': ('phone_number', 'designation', 'roles', 'is_phone_verified', 'is_email_verified')}),
+        (None, {'fields': ('phone_number', 'designation', 'role', 'is_phone_verified', 'is_email_verified')}),
     )
     add_fieldsets = UserAdmin.add_fieldsets + (
-        (None, {'fields': ('phone_number', 'designation', 'roles', 'is_phone_verified', 'is_email_verified')}),
+        (None, {'fields': ('phone_number', 'designation', 'role', 'is_phone_verified', 'is_email_verified')}),
     )
 
 # Register all models
