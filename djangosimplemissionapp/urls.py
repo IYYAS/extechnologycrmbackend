@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import (
-    UserListAPIView, UserDetailAPIView, ChangePasswordView, 
+    UserListAPIView, UserDetailAPIView, CurrentUserView, ChangePasswordView, 
     RoleListCreateAPIView, RoleDetailAPIView,
     AdminChangeUserPasswordView, ProjectClientListCreateAPIView, ProjectClientDetailAPIView,
     ProjectBusinessAddressListCreateAPIView, ProjectBusinessAddressDetailAPIView,
@@ -10,7 +10,7 @@ from .views import (
     ProjectFinanceListCreateAPIView, ProjectFinanceDetailAPIView,
     TeamListCreateAPIView, TeamDetailAPIView,
     ProjectTeamListCreateAPIView, ProjectTeamDetailAPIView,
-    ProjectNatureListCreateAPIView, ProjectNatureDetailAPIView,
+    ProjectNatureListCreateAPIView, ProjectNatureDetailAPIView, ProjectExbotListCreateAPIView, ProjectExbotDetailAPIView,
     ProjectListCreateAPIView, ProjectDetailAPIView,
     ProjectSummaryListAPIView,
     ProjectBaseInformationListCreateAPIView, ProjectBaseInformationDetailAPIView,
@@ -50,7 +50,7 @@ from .views import (
 
 from .financial_views import (
     IncomeStatementView, CashFlowStatementView, BalanceSheetView, ProjectAnalyticalAPIView,
-    ServerAnalyticsAPIView, DomainAnalyticsAPIView
+    ServerAnalyticsAPIView, DomainAnalyticsAPIView, ExbotAnalyticsAPIView
 )
 
 urlpatterns = [
@@ -60,8 +60,10 @@ urlpatterns = [
     path('api/analytical/projects/', ProjectAnalyticalAPIView.as_view(), name='api-analytical-projects'),
     path('api/analytical/servers/', ServerAnalyticsAPIView.as_view(), name='api-analytical-servers'),
     path('api/analytical/domains/', DomainAnalyticsAPIView.as_view(), name='api-analytical-domains'),
+    path('api/analytical/exbots/', ExbotAnalyticsAPIView.as_view(), name='api-analytical-exbots'),
     path('api/users/', UserListAPIView.as_view(), name='api-user-list'),
     path('api/users/<int:pk>/', UserDetailAPIView.as_view(), name='api-user-detail'),
+    path('api/users/me/', CurrentUserView.as_view(), name='api-user-me'),
     path('api/change-password/', ChangePasswordView.as_view(), name='api-change-password'),
     path('api/admin-change-password/<int:pk>/', AdminChangeUserPasswordView.as_view(), name='api-admin-change-password'),
     path('api/roles/', RoleListCreateAPIView.as_view(), name='api-role-list-create'),
@@ -77,6 +79,8 @@ urlpatterns = [
     path('api/project-domains/<int:pk>/', ProjectDomainDetailAPIView.as_view(), name='api-project-domain-detail'),
     path('api/project-servers/', ProjectServerListCreateAPIView.as_view(), name='api-project-server-list-create'),
     path('api/project-servers/<int:pk>/', ProjectServerDetailAPIView.as_view(), name='api-project-server-detail'),
+    path('api/project-exbots/', ProjectExbotListCreateAPIView.as_view(), name='api-project-exbot-list-create'),
+    path('api/project-exbots/<int:pk>/', ProjectExbotDetailAPIView.as_view(), name='api-project-exbot-detail'),
     path('api/project-finances/', ProjectFinanceListCreateAPIView.as_view(), name='api-project-finance-list-create'),
     path('api/project-finances/<int:pk>/', ProjectFinanceDetailAPIView.as_view(), name='api-project-finance-detail'),   
     path('api/teams/', TeamListCreateAPIView.as_view(), name='api-team-list-create'),

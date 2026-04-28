@@ -9,7 +9,8 @@ from django.http import FileResponse
 
 from .models import (
     Invoice, OtherIncome, Salary, OtherExpense, ProjectDomain, ProjectServer, 
-    Payment, ClientAdvance, Project, ProjectService, ProjectServiceTeam, ProjectTeam
+    Payment, ClientAdvance, Project, ProjectService, ProjectServiceTeam, ProjectTeam,
+    ProjectExbot
 )
 from .pdf_utils import generate_income_statement_pdf, generate_cash_flow_statement_pdf, generate_balance_sheet_pdf
 
@@ -343,6 +344,21 @@ class ProjectAnalyticalAPIView(APIView):
             )
             create_notification_if_new(superadmins, message, project=server.project, notification_type='server_alert')
 
+        # Check Exbots
+        expiring_exbots = ProjectExbot.objects.filter(
+            plan_deactive_date__gte=today,
+            plan_deactive_date__lte=max_date
+        )
+        for exbot in expiring_exbots:
+            days_remaining = (exbot.plan_deactive_date - today).days
+            message = (
+                f"Exbot Expiry Alert: The exbot '{exbot.whatsapp_number}' ({exbot.plan_category}) for project "
+                f"'{exbot.project.name if exbot.project else 'N/A'}' is expiring on "
+                f"{exbot.plan_deactive_date} ({days_remaining} days remaining). "
+                f"Action Required: Please ensure payment is processed or plan is renewed to avoid service interruption."
+            )
+            create_notification_if_new(superadmins, message, project=exbot.project, notification_type='exbot_alert')
+
     def get(self, request):
         # Auto-trigger expiry check every time this API is called
         self._run_expiry_check()
@@ -448,6 +464,7 @@ class ProjectAnalyticalAPIView(APIView):
             is_unpaid = p.project_finances.filter(total_balance_due__gt=0).exists() or \
                         p.project_domains.filter(payment_status__iexact='UNPAID').exists() or \
                         p.project_servers.filter(payment_status__iexact='UNPAID').exists() or \
+                        p.project_exbots.filter(payment_status__iexact='UNPAID').exists() or \
                         p.services.filter(payment_status__iexact='UNPAID').exists() or \
                         p.project_teams.filter(payment_status__iexact='UNPAID').exists()
             
@@ -477,9 +494,11 @@ class ProjectAnalyticalAPIView(APIView):
             d_paid = float(p.project_domains.filter(payment_status__iexact='PAID').aggregate(d=Sum('cost'))['d'] or 0.0)
             srv_total = float(p.project_servers.aggregate(v=Sum('cost'))['v'] or 0.0)
             srv_paid = float(p.project_servers.filter(payment_status__iexact='PAID').aggregate(v=Sum('cost'))['v'] or 0.0)
+            ex_total = float(p.project_exbots.aggregate(e=Sum('plan_rate'))['e'] or 0.0)
+            ex_paid = float(p.project_exbots.filter(payment_status__iexact='PAID').aggregate(e=Sum('plan_rate'))['e'] or 0.0)
             
-            p_total = t_total + s_total + d_total + srv_total
-            p_paid = t_paid + s_paid + d_paid + srv_paid
+            p_total = t_total + s_total + d_total + srv_total + ex_total
+            p_paid = t_paid + s_paid + d_paid + srv_paid + ex_paid
             total_ov_remaining_amount += (p_total - p_paid)
 
         overview_data = {
@@ -540,6 +559,15 @@ class ProjectAnalyticalAPIView(APIView):
             if total_servers > 0:
                 server_payment_str = "Paid" if paid_servers == total_servers else f"Unpaid ({paid_servers}/{total_servers} Paid)"
 
+            # Exbot counts
+            exbots = project.project_exbots.all()
+            paid_exbots = exbots.filter(payment_status__iexact='PAID').count()
+            unpaid_exbots = exbots.filter(payment_status__iexact='UNPAID').count()
+            total_exbots = exbots.count()
+            exbot_payment_str = "No Bot"
+            if total_exbots > 0:
+                exbot_payment_str = "Paid" if paid_exbots == total_exbots else f"Unpaid ({paid_exbots}/{total_exbots} Paid)"
+
             # Finance & Details (DYNAMIC AGGREGATION FROM NEW COST FIELDS)
             # 1. Teams
             teams_total = float(project.project_teams.aggregate(total=Sum('cost'))['total'] or 0.0)
@@ -558,9 +586,13 @@ class ProjectAnalyticalAPIView(APIView):
             servers_total = float(servers.aggregate(total=Sum('cost'))['total'] or 0.0)
             servers_paid = float(servers.filter(payment_status__iexact='PAID').aggregate(total=Sum('cost'))['total'] or 0.0)
             
+            # 5. Exbots
+            exbots_total = float(exbots.aggregate(total=Sum('plan_rate'))['total'] or 0.0)
+            exbots_paid = float(exbots.filter(payment_status__iexact='PAID').aggregate(total=Sum('plan_rate'))['total'] or 0.0)
+            
             # Final Totals
-            total_project_cost = teams_total + services_total + domains_total + servers_total
-            total_paid = teams_paid + services_paid + domains_paid + servers_paid
+            total_project_cost = teams_total + services_total + domains_total + servers_total + exbots_total
+            total_paid = teams_paid + services_paid + domains_paid + servers_paid + exbots_paid
             balance_due = total_project_cost - total_paid
             
             domain_cost = domains_total
@@ -570,44 +602,6 @@ class ProjectAnalyticalAPIView(APIView):
             
             domain_deadline = domains.aggregate(Min('expiration_date'))['expiration_date__min'] if domains.exists() else None
             server_deadline = servers.aggregate(Min('expiration_date'))['expiration_date__min'] if servers.exists() else None
-
-            category_status = {
-                "project": "Paid" if (project_cost > 0 and teams_paid == teams_total) else ("NA" if project_cost == 0 else "Unpaid"),
-                "project_total_cost": teams_total,
-                "project_paid_cost": teams_paid,
-                "project_unpaid_cost": teams_total - teams_paid,
-                
-                "domain": "NA" if total_domains == 0 else ("Paid" if (domains_total > 0 and domains_paid == domains_total) else "Unpaid"),
-                "domain_total_cost": domains_total,
-                "domain_paid_cost": domains_paid,
-                "domain_unpaid_cost": domains_total - domains_paid,
-                "domain_deadline": domain_deadline,
-                "domain_items": [
-                    {
-                        "name": d.name,
-                        "cost": float(d.cost or 0.0),
-                        "payment_status": d.payment_status,
-                        "deadline": d.expiration_date.strftime('%Y-%m-%d') if d.expiration_date else None
-                    } for d in domains
-                ],
-                "server": "NA" if total_servers == 0 else ("Paid" if (servers_total > 0 and servers_paid == servers_total) else "Unpaid"),
-                "server_total_cost": servers_total,
-                "server_paid_cost": servers_paid,
-                "server_unpaid_cost": servers_total - servers_paid,
-                "server_deadline": server_deadline,
-                "server_items": [
-                    {
-                        "name": s.name,
-                        "cost": float(s.cost or 0.0),
-                        "payment_status": s.payment_status,
-                        "deadline": s.expiration_date.strftime('%Y-%m-%d') if s.expiration_date else None
-                    } for s in servers
-                ],
-                "service": "NA" if p_srvs.count() == 0 else ("Paid" if (service_cost > 0 and services_paid == services_total) else "Unpaid"),
-                "service_total_cost": services_total,
-                "service_paid_cost": services_paid,
-                "service_unpaid_cost": services_total - services_paid,
-            }
 
             # Granular Team counts for "X/Y Complete"
             project_teams_qs = project.project_teams.all()
@@ -621,6 +615,59 @@ class ProjectAnalyticalAPIView(APIView):
             
             total_teams_count = p_total + s_total
             completed_teams_count = p_done + s_done
+
+            category_status = {
+                "project": "Paid" if (completed_teams_count == total_teams_count) else "Unpaid",
+                "project_total_cost": teams_total,
+                "project_paid_cost": teams_paid,
+                "project_unpaid_cost": teams_total - teams_paid,
+                
+                "domain": "Paid" if (paid_domains == total_domains) else "Unpaid",
+                "domain_total_cost": domains_total,
+                "domain_paid_cost": domains_paid,
+                "domain_unpaid_cost": domains_total - domains_paid,
+                "domain_deadline": domain_deadline,
+                "domain_items": [
+                    {
+                        "name": d.name,
+                        "cost": float(d.cost or 0.0),
+                        "payment_status": d.payment_status,
+                        "deadline": d.expiration_date.strftime('%Y-%m-%d') if d.expiration_date else None
+                    } for d in domains
+                ],
+                "server": "Paid" if (paid_servers == total_servers) else "Unpaid",
+                "server_total_cost": servers_total,
+                "server_paid_cost": servers_paid,
+                "server_unpaid_cost": servers_total - servers_paid,
+                "server_deadline": server_deadline,
+                "server_items": [
+                    {
+                        "name": s.name,
+                        "cost": float(s.cost or 0.0),
+                        "payment_status": s.payment_status,
+                        "deadline": s.expiration_date.strftime('%Y-%m-%d') if s.expiration_date else None
+                    } for s in servers
+                ],
+                "service": "Paid" if (p_srvs.filter(payment_status__iexact='PAID').count() == p_srvs.count()) else "Unpaid",
+                "service_total_cost": services_total,
+                "service_paid_cost": services_paid,
+                "service_unpaid_cost": services_total - services_paid,
+
+                "exbot": "Paid" if (paid_exbots == total_exbots) else "Unpaid",
+                "exbot_total_cost": exbots_total,
+                "exbot_paid_cost": exbots_paid,
+                "exbot_unpaid_cost": exbots_total - exbots_paid,
+                "exbot_items": [
+                    {
+                        "whatsapp": ex.whatsapp_number,
+                        "cost": float(ex.plan_rate or 0.0),
+                        "payment_status": ex.payment_status,
+                        "deadline": ex.plan_deactive_date.strftime('%Y-%m-%d') if ex.plan_deactive_date else None
+                    } for ex in exbots
+                ],
+            }
+
+
 
             # Expiration Counts (Within 30 days) - Include ALL (Paid + Unpaid) and Only Latest
             soon = today + timedelta(days=30)
@@ -648,6 +695,18 @@ class ProjectAnalyticalAPIView(APIView):
                     seen_d.add(key)
                     
             domain_expiring_soon_count = len([d for d in latest_proj_domains if d.expiration_date and today <= d.expiration_date <= soon])
+
+            # Deduplicate exbots for this project
+            proj_exbots = project.project_exbots.all().order_by('whatsapp_number', '-plan_deactive_date')
+            latest_proj_exbots = []
+            seen_e = set()
+            for ex in proj_exbots:
+                key = (ex.whatsapp_number)
+                if key not in seen_e:
+                    latest_proj_exbots.append(ex)
+                    seen_e.add(key)
+            
+            exbot_expiring_soon_count = len([ex for ex in latest_proj_exbots if ex.plan_deactive_date and today <= ex.plan_deactive_date <= soon])
 
             services_data = []
             for service in project.services.all():
@@ -681,6 +740,7 @@ class ProjectAnalyticalAPIView(APIView):
                 "project_payment": category_status["project"], # Legacy
                 "domain_payment": domain_payment_str, 
                 "server_payment": server_payment_str,
+                "exbot_payment": exbot_payment_str,
                 "project_team_start_date": project.project_teams.aggregate(Min('start_date'))['start_date__min'],
                 "project_team_deadline": project.project_teams.aggregate(Max('deadline'))['deadline__max'],
                 "serviceteam_count": project.services.count(),
@@ -690,12 +750,17 @@ class ProjectAnalyticalAPIView(APIView):
                 "domain_count": total_domains,
                 "paid_domain_count": paid_domains,
                 "unpaid_domain_count": unpaid_domains,
+                "exbot_count": total_exbots,
+                "paid_exbot_count": paid_exbots,
+                "unpaid_exbot_count": unpaid_exbots,
                 "server_name": servers.first().name if servers.exists() else "No Server",
                 "domain_name": domains.first().name if domains.exists() else "No Domain",
+                "exbot_name": exbots.first().whatsapp_number if exbots.exists() else "No Bot",
                 "total_teams_count": total_teams_count,
                 "completed_teams_count": completed_teams_count,
                 "server_expiring_soon_count": server_expiring_soon_count,
                 "domain_expiring_soon_count": domain_expiring_soon_count,
+                "exbot_expiring_soon_count": exbot_expiring_soon_count,
                 "services": services_data
             }
             results.append(project_result)
@@ -741,9 +806,9 @@ class ServerAnalyticsAPIView(APIView):
         unpaid_servers_count = len([s for s in servers_list_latest if s.payment_status == 'UNPAID'])
         total_cost = sum([s.cost for s in servers_list_latest if s.cost])
 
-        # Status counts based on latest servers
-        computed_active = len([s for s in servers_list_latest if s.status and s.status.lower() == 'active'])
-        computed_expired = len([s for s in servers_list_latest if s.status and s.status.lower() == 'expired'])
+        # Status counts based on latest servers & expiry date
+        computed_expired = len([s for s in servers_list_latest if (s.expiration_date and s.expiration_date < today) or (s.status and s.status.lower() == 'expired')])
+        computed_active = len([s for s in servers_list_latest if s.status and s.status.lower() == 'active' and not (s.expiration_date and s.expiration_date < today)])
         
         # Expiring Soon: Include BOTH Paid and Unpaid
         computed_expiring_soon = len([s for s in servers_list_latest if s.expiration_date and today <= s.expiration_date <= next_30_days])
@@ -783,6 +848,16 @@ class ServerAnalyticsAPIView(APIView):
 
         # Expiring soon list
         expiring_soon = [s for s in detailed_servers_list if s["days_until_expiry"] is not None and 0 <= s["days_until_expiry"] <= 30]
+
+        # SORTING: Expiring Soon (0-30 days) first, then Active, then Expired last
+        detailed_servers_list.sort(
+            key=lambda x: (
+                0 if x["days_until_expiry"] is not None and 0 <= x["days_until_expiry"] <= 30 else
+                1 if x["days_until_expiry"] is None or x["days_until_expiry"] > 30 else
+                2,
+                x["days_until_expiry"] if x["days_until_expiry"] is not None else 9999
+            )
+        )
 
         data = {
             "overview": {
@@ -827,8 +902,9 @@ class DomainAnalyticsAPIView(APIView):
 
         # Totals based on latest domains only
         total_domains = len(domains_list_latest)
-        active_domains = len([d for d in domains_list_latest if d.status and d.status.lower() == 'active'])
-        expired_domains = len([d for d in domains_list_latest if d.status and d.status.lower() == 'expired'])
+        # Status counts based on latest domains & expiry date
+        expired_domains = len([d for d in domains_list_latest if (d.expiration_date and d.expiration_date < today) or (d.status and d.status.lower() == 'expired')])
+        active_domains = len([d for d in domains_list_latest if d.status and d.status.lower() == 'active' and not (d.expiration_date and d.expiration_date < today)])
         paid_domains_count = len([d for d in domains_list_latest if d.payment_status == 'PAID'])
         unpaid_domains_count = len([d for d in domains_list_latest if d.payment_status == 'UNPAID'])
         total_cost = sum([d.cost for d in domains_list_latest if d.cost])
@@ -867,6 +943,16 @@ class DomainAnalyticsAPIView(APIView):
         # Expiring soon list
         expiring_soon = [d for d in detailed_domains_list if d["days_until_expiry"] is not None and 0 <= d["days_until_expiry"] <= 30]
 
+        # SORTING: Expiring Soon (0-30 days) first, then Active, then Expired last
+        detailed_domains_list.sort(
+            key=lambda x: (
+                0 if x["days_until_expiry"] is not None and 0 <= x["days_until_expiry"] <= 30 else
+                1 if x["days_until_expiry"] is None or x["days_until_expiry"] > 30 else
+                2,
+                x["days_until_expiry"] if x["days_until_expiry"] is not None else 9999
+            )
+        )
+
         data = {
             "overview": {
                 "total_domains": total_domains,
@@ -882,4 +968,87 @@ class DomainAnalyticsAPIView(APIView):
             "domains_list": detailed_domains_list
         }
 
+        return Response(data, status=status.HTTP_200_OK)
+
+class ExbotAnalyticsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import ProjectExbot
+        from django.db.models import Count, Sum
+        from django.utils import timezone
+        from datetime import timedelta
+
+        today = timezone.now().date()
+        next_30_days = today + timedelta(days=30)
+
+        # Get all exbots
+        all_exbots = ProjectExbot.objects.all().select_related('project').order_by('project_id', 'whatsapp_number', '-plan_deactive_date')
+        
+        exbots_list = list(all_exbots)
+
+        total_exbots = len(exbots_list)
+        
+        # Status counts
+        expired_exbots = len([e for e in exbots_list if (e.plan_deactive_date and e.plan_deactive_date < today) or (e.status and e.status.lower() == 'expired')])
+        active_exbots = len([e for e in exbots_list if e.status and e.status.lower() == 'active' and not (e.plan_deactive_date and e.plan_deactive_date < today)])
+        paid_exbots_count = len([e for e in exbots_list if e.payment_status == 'PAID'])
+        unpaid_exbots_count = len([e for e in exbots_list if e.payment_status == 'UNPAID'])
+        total_cost = sum([e.plan_rate for e in exbots_list if e.plan_rate])
+
+        # Expiring Soon
+        computed_expiring_soon = len([e for e in exbots_list if e.plan_deactive_date and today <= e.plan_deactive_date <= next_30_days])
+
+        # Group by category
+        by_category_dict = {}
+        for e in exbots_list:
+            cat = e.plan_category or "Unknown"
+            by_category_dict[cat] = by_category_dict.get(cat, 0) + 1
+        by_category = [{"plan_category": k, "count": v} for k, v in by_category_dict.items()]
+
+        # Detailed list
+        detailed_exbots_list = []
+        for e in exbots_list:
+            days_until_expiry = None
+            if e.plan_deactive_date:
+                days_until_expiry = (e.plan_deactive_date - today).days
+
+            detailed_exbots_list.append({
+                "id": e.id,
+                "whatsapp_number": e.whatsapp_number,
+                "plan_category": e.plan_category,
+                "active_date": e.plan_active_date.strftime('%Y-%m-%d') if e.plan_active_date else None,
+                "deactive_date": e.plan_deactive_date.strftime('%Y-%m-%d') if e.plan_deactive_date else None,
+                "project": e.project.name if e.project else None,
+                "payment_status": e.payment_status,
+                "status": e.status,
+                "plan_rate": float(e.plan_rate) if e.plan_rate else 0.0,
+                "days_until_expiry": days_until_expiry,
+                "description": e.description,
+            })
+
+        # SORTING: Expiring Soon (0-30 days) first, then Active, then Expired last
+        detailed_exbots_list.sort(
+            key=lambda x: (
+                0 if x["days_until_expiry"] is not None and 0 <= x["days_until_expiry"] <= 30 else
+                1 if x["days_until_expiry"] is None or x["days_until_expiry"] > 30 else
+                2,
+                x["days_until_expiry"] if x["days_until_expiry"] is not None else 9999
+            )
+        )
+
+        data = {
+            "overview": {
+                "total_exbots": total_exbots,
+                "active_exbots": active_exbots,
+                "expired_exbots": expired_exbots,
+                "expiring_soon_count": computed_expiring_soon,
+                "paid_exbots": paid_exbots_count,
+                "unpaid_exbots": unpaid_exbots_count,
+                "total_cost": float(total_cost)
+            },
+            "by_category": by_category,
+            "expiring_soon": [e for e in detailed_exbots_list if e["days_until_expiry"] is not None and 0 <= e["days_until_expiry"] <= 30],
+            "exbots_list": detailed_exbots_list
+        }
         return Response(data, status=status.HTTP_200_OK)

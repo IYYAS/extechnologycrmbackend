@@ -65,6 +65,7 @@ class User(AbstractUser):
     is_phone_verified = models.BooleanField(default=False)
     is_email_verified = models.BooleanField(default=False)
     designation = models.CharField(max_length=100, blank=True, null=True)
+    profile_pic = models.ImageField(upload_to='profile_pics/', blank=True, null=True)
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name='users')
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
@@ -237,6 +238,11 @@ class ProjectDomain(models.Model):
         ('Client', 'Client'),
         ('Third Party', 'Third Party'),
     )
+    STATUS_CHOICES = (
+        ('Active', 'Active'),
+        ('Pending', 'Pending'),
+        ('Expired', 'Expired'),
+    )
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_domains', null=True, blank=True)
     client_address = models.ForeignKey("ProjectBusinessAddress", on_delete=models.SET_NULL, null=True, blank=True, related_name='domains')
     name = models.CharField(max_length=200, blank=True, null=True)
@@ -245,13 +251,27 @@ class ProjectDomain(models.Model):
     purchased_from = models.CharField(max_length=200, blank=True, null=True)
     purchase_date = models.DateField(null=True, blank=True)
     expiration_date = models.DateField(null=True, blank=True)
-    status = models.CharField(max_length=50, default='Active', blank=True, null=True)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending', blank=True, null=True)
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     payment_status = models.CharField(
         max_length=20,
         choices=[('PAID', 'Paid'), ('UNPAID', 'Unpaid')],
         default='UNPAID'
     )
+
+    def save(self, *args, **kwargs):
+        from django.utils import timezone
+        today = timezone.now().date()
+        
+        if not self.purchase_date and not self.expiration_date:
+            self.status = 'Pending'
+        elif self.expiration_date:
+            if self.expiration_date < today:
+                self.status = 'Expired'
+            else:
+                self.status = 'Active'
+                
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name or "Unnamed Domain"
@@ -267,6 +287,11 @@ class ProjectServer(models.Model):
         ('Client', 'Client'),
         ('Third Party', 'Third Party'),
     )
+    STATUS_CHOICES = (
+        ('Active', 'Active'),
+        ('Pending', 'Pending'),
+        ('Expired', 'Expired'),
+    )
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_servers', null=True, blank=True)
     client_address = models.ForeignKey("ProjectBusinessAddress", on_delete=models.SET_NULL, null=True, blank=True, related_name='servers')
     server_type = models.CharField(max_length=100, blank=True, null=True, help_text="e.g., VPS, Shared, Dedicated")
@@ -276,13 +301,27 @@ class ProjectServer(models.Model):
     purchased_from = models.CharField(max_length=200, blank=True, null=True)
     purchase_date = models.DateField(null=True, blank=True)
     expiration_date = models.DateField(null=True, blank=True)
-    status = models.CharField(max_length=50, default='Active', blank=True, null=True)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending', blank=True, null=True)
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     payment_status = models.CharField(
         max_length=20,
         choices=[('PAID', 'Paid'), ('UNPAID', 'Unpaid')],
         default='UNPAID'
     )
+
+    def save(self, *args, **kwargs):
+        from django.utils import timezone
+        today = timezone.now().date()
+        
+        if not self.purchase_date and not self.expiration_date:
+            self.status = 'Pending'
+        elif self.expiration_date:
+            if self.expiration_date < today:
+                self.status = 'Expired'
+            else:
+                self.status = 'Active'
+                
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.server_type} - {self.name}" or "Unnamed Server"
@@ -291,6 +330,44 @@ class ProjectServer(models.Model):
         permissions = [
             ("view_server_stats", "Can view server analytics and stats"),
         ]
+
+class ProjectExbot(models.Model):
+    STATUS_CHOICES = (
+        ('Active', 'Active'),
+        ('Pending', 'Pending'),
+        ('Expired', 'Expired'),
+    )
+    PAYMENT_STATUS_CHOICES = (
+        ('PAID', 'Paid'),
+        ('UNPAID', 'Unpaid'),
+    )
+    project = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_exbots', null=True, blank=True)
+    whatsapp_number = models.CharField(max_length=20, blank=True, null=True)
+    plan_category = models.CharField(max_length=100, blank=True, null=True)
+    plan_active_date = models.DateField(null=True, blank=True)
+    plan_deactive_date = models.DateField(null=True, blank=True)
+    plan_rate = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='UNPAID')
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pending')
+    description = models.TextField(blank=True, null=True)
+
+    def save(self, *args, **kwargs):
+        from django.utils import timezone
+        today = timezone.now().date()
+        
+        if not self.plan_active_date and not self.plan_deactive_date:
+            self.status = 'Pending'
+        elif self.plan_deactive_date:
+            if self.plan_deactive_date < today:
+                self.status = 'Expired'
+            else:
+                self.status = 'Active'
+                
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.whatsapp_number} - {self.plan_category}"
+
 
 class ProjectFinance(models.Model):
     project  = models.ForeignKey("Project", on_delete=models.CASCADE, related_name='project_finances', null=True, blank=True)
@@ -679,6 +756,9 @@ class Invoice(models.Model):
             if (pt := item.project_team):
                 pt.payment_status = "PAID"
                 pt.save(update_fields=["payment_status"])
+            if item.project_exbot:
+                item.project_exbot.payment_status = "PAID"
+                item.project_exbot.save(update_fields=["payment_status"])
 
     def update_totals(self):
         """
@@ -751,6 +831,15 @@ class InvoiceItem(models.Model):
     # LINK TEAM
     project_team = models.ForeignKey(
         "ProjectTeam",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoice_items"
+    )
+
+    # LINK EXBOT
+    project_exbot = models.ForeignKey(
+        "ProjectExbot",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

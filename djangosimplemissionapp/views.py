@@ -10,7 +10,7 @@ from .models import (
     Project,ProjectBaseInformation,ProjectExcution,ProjectTeamMember,ProjectService,ProjectServiceMember,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,ProjectDocument,
-    ClientAdvance, UserSalary
+    ClientAdvance, UserSalary,ProjectExbot
 )
   
 from .serializers import (
@@ -21,7 +21,7 @@ from .serializers import (
     ProjectSerializer,ProjectBaseInformationSerializer,ProjectExcutionSerializer,ProjectTeamMemberSerializer,ProjectServiceSerializer,
     EmployeeDailyActivitySerializer,ActivityLogSerializer,InvoiceSerializer,InvoiceItemSerializer,PaymentSerializer,ActivityExceedCommentSerializer,
     NotificationSerializer,EmployeeLeaveSerializer,CompanySerializer,CompanyProfileSerializer,SalarySerializer,AttendanceSerializer,EmployeeSerializer,OtherIncomeSerializer,OtherExpenseSerializer,RoleSerializer, PermissionSerializer,
-    ProjectDocumentSerializer, ProjectSummarySerializer, ClientAdvanceSerializer, ClientSummarySerializer, UserSalarySerializer
+    ProjectDocumentSerializer, ProjectSummarySerializer, ClientAdvanceSerializer, ClientSummarySerializer, UserSalarySerializer,ProjectExbotSerializer
 )
 
 
@@ -134,6 +134,26 @@ class UserDetailAPIView(views.APIView):
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+class CurrentUserView(views.APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        serializer = UserSerializer(request.user, context={'request': request})
+        return Response(serializer.data)
+
+    def put(self, request):
+        # Exclude role_id and other sensitive fields from self-update
+        data = request.data.copy()
+        data.pop('role_id', None)
+        data.pop('is_superuser', None)
+        data.pop('is_staff', None)
+        
+        serializer = UserSerializer(request.user, data=data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -155,6 +175,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'last_name': user.last_name,
             'phone_number': user.phone_number,
             'designation': user.designation,
+            'profile_pic': user.profile_pic.url if user.profile_pic else None,
             'is_superuser': user.is_superuser,
             'role': user.role.name if user.role else None,
             'roles': [{'name': user.role.name}] if user.role else [],
@@ -309,6 +330,20 @@ class ProjectDomainListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'purchased_from', 'status', 'accrued_by']
 
+    def get_queryset(self):
+        from django.utils import timezone
+        from django.db.models import Case, When, Value, IntegerField, F
+        today = timezone.now().date()
+        qs = super().get_queryset()
+        return qs.annotate(
+            is_expired=Case(
+                When(expiration_date__lt=today, then=Value(1)),
+                When(status__iexact='Expired', then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField()
+            )
+        ).order_by('is_expired', F('expiration_date').asc(nulls_last=True))
+
 class ProjectDomainDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = ProjectDomain.objects.all()
     serializer_class = ProjectDomainSerializer
@@ -322,10 +357,51 @@ class ProjectServerListCreateAPIView(ListCreateAPIView):
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'server_type', 'purchased_from', 'status', 'accrued_by']
 
+    def get_queryset(self):
+        from django.utils import timezone
+        from django.db.models import Case, When, Value, IntegerField, F
+        today = timezone.now().date()
+        qs = super().get_queryset()
+        return qs.annotate(
+            is_expired=Case(
+                When(expiration_date__lt=today, then=Value(1)),
+                When(status__iexact='Expired', then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField()
+            )
+        ).order_by('is_expired', F('expiration_date').asc(nulls_last=True))
+
 class ProjectServerDetailAPIView(RetrieveUpdateDestroyAPIView):
     queryset = ProjectServer.objects.all()
     serializer_class = ProjectServerSerializer
     permission_classes = [IsAuthenticated]      
+
+class ProjectExbotListCreateAPIView(ListCreateAPIView):
+    queryset = ProjectExbot.objects.all()
+    serializer_class = ProjectExbotSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['whatsapp_number', 'plan_category', 'status', 'payment_status']
+
+    def get_queryset(self):
+        from django.utils import timezone
+        from django.db.models import Case, When, Value, IntegerField, F
+        today = timezone.now().date()
+        qs = super().get_queryset()
+        return qs.annotate(
+            is_expired=Case(
+                When(status__iexact='Expired', then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField()
+            )
+        ).order_by('is_expired', F('plan_deactive_date').asc(nulls_last=True))
+
+class ProjectExbotDetailAPIView(RetrieveUpdateDestroyAPIView):
+    queryset = ProjectExbot.objects.all()
+    serializer_class = ProjectExbotSerializer
+    permission_classes = [IsAuthenticated]
+
 
 class ProjectFinanceListCreateAPIView(ListCreateAPIView):
     queryset = ProjectFinance.objects.all()

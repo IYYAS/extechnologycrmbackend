@@ -10,7 +10,7 @@ from .models import (
     ProjectServiceTeam,ProjectServiceMember,ProjectDocument,
     EmployeeDailyActivity,ActivityLog,Invoice,InvoiceItem,Payment,ActivityExceedComment,
     Notification,EmployeeLeave,Company,CompanyProfile,Salary,Attendance,Employee,OtherIncome,OtherExpense,UserSalary,
-    ClientAdvance
+    ClientAdvance,ProjectExbot
 )
 class PermissionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -52,6 +52,7 @@ class UserSerializer(serializers.ModelSerializer):
             'last_name',
             'phone_number',
             'designation',
+            'profile_pic',
             'role',
             'role_id',
         ]
@@ -206,6 +207,13 @@ class ProjectServerSerializer(serializers.ModelSerializer):
                 provider = DomainOrServerThirdPartyServiceProvider.objects.create(**p_data)
                 instance.provider.add(provider)
         return instance
+
+class ProjectExbotSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectExbot
+        fields = '__all__'
+        extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
+
 
 
 class ProjectFinanceSerializer(serializers.ModelSerializer):
@@ -740,6 +748,7 @@ class ProjectSerializer(serializers.ModelSerializer):
     project_team_members       = ProjectTeamMemberSerializer(many=True, required=False)
     services                   = ProjectServiceSerializer(many=True, required=False)
     project_documents          = ProjectDocumentSerializer(many=True, required=False)
+    project_exbots             = ProjectExbotSerializer(many=True, required=False)
 
     # ManyToMany: Project Business Addresses
     project_business_addresses = ProjectBusinessAddressSerializer(many=True, required=False)
@@ -760,7 +769,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             'project_base_informations', 'project_excutions',
             'project_finances', 'project_domains', 'project_servers',
             'project_clients',
-            'project_teams', 'project_team_members', 'services', 'project_documents',
+            'project_teams', 'project_team_members', 'services', 'project_documents', 'project_exbots',
         ]
         extra_kwargs = {'id': {'read_only': False, 'required': False, 'allow_null': True}}
 
@@ -812,6 +821,7 @@ class ProjectSerializer(serializers.ModelSerializer):
         team_member_data = validated_data.pop('project_team_members', [])
         service_data     = validated_data.pop('services', [])
         document_data    = validated_data.pop('project_documents', [])
+        exbot_data       = validated_data.pop('project_exbots', [])
 
         project = Project.objects.create(**validated_data)
 
@@ -834,6 +844,7 @@ class ProjectSerializer(serializers.ModelSerializer):
         self._create_fk_children(ProjectClient, project, client_data)
         self._create_fk_children(ProjectTeamMember, project, team_member_data)
         self._create_fk_children(ProjectDocument, project, document_data)
+        self._create_fk_children(ProjectExbot, project, exbot_data)
 
 
         for d_data in domain_data:
@@ -897,6 +908,7 @@ class ProjectSerializer(serializers.ModelSerializer):
         team_member_data = validated_data.pop('project_team_members', None)
         service_data     = validated_data.pop('services', None)
         document_data    = validated_data.pop('project_documents', None)
+        exbot_data       = validated_data.pop('project_exbots', None)
 
         if address_data is not None:
             # Sync Many-to-Many addresses
@@ -932,6 +944,8 @@ class ProjectSerializer(serializers.ModelSerializer):
             self._sync_fk_children(ProjectTeamMember, instance, team_member_data)
         if document_data is not None:
             self._sync_fk_children(ProjectDocument, instance, document_data)
+        
+        self._sync_fk_children(ProjectExbot, instance, exbot_data)
 
         if domain_data is not None:
             incoming_ids = [d.get('id') for d in domain_data if d.get('id')]

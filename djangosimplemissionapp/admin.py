@@ -8,7 +8,7 @@ from .models import (
     ProjectService, EmployeeDailyActivity, ActivityLog, Invoice,
     InvoiceItem, Payment, ActivityExceedComment, Notification,
     EmployeeLeave, Company, CompanyProfile, Salary, Attendance,
-    Employee, OtherIncome, OtherExpense, UserSalary
+    Employee, OtherIncome, OtherExpense, UserSalary, ProjectExbot
 )
 
 # Custom UserAdmin to handle the custom User model
@@ -30,6 +30,7 @@ admin.site.register(ProjectBusinessAddress)
 admin.site.register(DomainOrServerThirdPartyServiceProvider)
 admin.site.register(ProjectDomain)
 admin.site.register(ProjectServer)
+admin.site.register(ProjectExbot)
 admin.site.register(ProjectFinance)
 admin.site.register(Team)
 admin.site.register(ProjectTeam)
