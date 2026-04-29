@@ -149,6 +149,7 @@ class DomainOrServerThirdPartyServiceProviderSerializer(serializers.ModelSeriali
 
 class ProjectDomainSerializer(serializers.ModelSerializer):
     provider = DomainOrServerThirdPartyServiceProviderSerializer(many=True, required=False)
+    project_name = serializers.ReadOnlyField(source='project.name')
 
     class Meta:
         model = ProjectDomain
@@ -180,6 +181,7 @@ class ProjectDomainSerializer(serializers.ModelSerializer):
 
 class ProjectServerSerializer(serializers.ModelSerializer):
     provider = DomainOrServerThirdPartyServiceProviderSerializer(many=True, required=False)
+    project_name = serializers.ReadOnlyField(source='project.name')
 
     class Meta:
         model = ProjectServer
@@ -209,6 +211,7 @@ class ProjectServerSerializer(serializers.ModelSerializer):
         return instance
 
 class ProjectExbotSerializer(serializers.ModelSerializer):
+    project_name = serializers.ReadOnlyField(source='project.name')
     class Meta:
         model = ProjectExbot
         fields = '__all__'
